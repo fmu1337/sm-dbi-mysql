@@ -33,6 +33,7 @@ CPPFLAGS = -Wno-non-virtual-dtor -fno-exceptions -fno-rtti -fvisibility-inlines-
 INCLUDE = -I. -Isdk \
 	-I$(SMSDK)/public \
 	-I$(SMSDK)/public/sourcepawn \
+	-I$(SMSDK)/sourcepawn/include \
 	-I$(SMSDK)/public/amtl \
 	-I$(SMSDK)/public/amtl/amtl \
 	-I$(MMSOURCE)/core/sourcehook \

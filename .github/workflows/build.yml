@@ -87,6 +87,18 @@ jobs:
             fi
           }
 
+          ensure_sourcepawn() {
+            local root="$1"
+            # 1.7 vendors headers in public/sourcepawn; newer SM uses submodule.
+            if [ -f "$root/public/sourcepawn/sp_vm_types.h" ]; then
+              return 0
+            fi
+            if [ ! -f "$root/sourcepawn/include/sp_vm_types.h" ]; then
+              git -C "$root" submodule update --init --depth 1 sourcepawn \
+                || git clone --depth 1 https://github.com/alliedmodders/sourcepawn "$root/sourcepawn"
+            fi
+          }
+
           if [ "${{ matrix.css34 }}" = "true" ]; then
             git clone "https://github.com/${{ matrix.sm_repo }}" /sdk/css34
             cd /sdk/css34
@@ -94,14 +106,18 @@ jobs:
             git submodule update --init sourcemod
             cd sourcemod
             git submodule update --init public/amtl || true
+            git submodule update --init sourcepawn || true
             ensure_amtl /sdk/css34/sourcemod
+            ensure_sourcepawn /sdk/css34/sourcemod
             ln -sfn /sdk/css34/sourcemod /sdk/sourcemod
           else
             git clone --depth 1 -b "${{ matrix.sm_ref }}" \
               "https://github.com/${{ matrix.sm_repo }}" /sdk/sourcemod
             cd /sdk/sourcemod
             git submodule update --init --depth 1 public/amtl || true
+            git submodule update --init --depth 1 sourcepawn || true
             ensure_amtl /sdk/sourcemod
+            ensure_sourcepawn /sdk/sourcemod
           fi
 
           curl -fsSL -o /tmp/mariadb.tgz \
