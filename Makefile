@@ -28,7 +28,7 @@ CFLAGS = -D_LINUX -Dstricmp=strcasecmp -D_stricmp=strcasecmp -D_strnicmp=strncas
 	-Dstrcmpi=strcasecmp -Wall -Wno-unused-parameter -Wno-switch -Wno-unknown-pragmas \
 	-mfpmath=sse -msse -DSOURCEMOD_BUILD -DHAVE_STDINT_H -m32 \
 	-fvisibility=hidden -fPIC
-CPPFLAGS = -Wno-non-virtual-dtor -fno-exceptions -fno-rtti -fvisibility-inlines-hidden -std=c++11
+CPPFLAGS = -Wno-non-virtual-dtor -fno-exceptions -fno-rtti -fvisibility-inlines-hidden -std=c++17
 
 INCLUDE = -I. -Isdk \
 	-I$(SMSDK)/public \
