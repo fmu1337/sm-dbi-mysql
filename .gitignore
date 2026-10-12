@@ -1,0 +1,10 @@
+work/
+build/
+dist/
+*.o
+*.so
+*.sha256
+.sdk/
+*.tar.gz
+*.zip
+.DS_Store
