@@ -26,9 +26,13 @@ public:
 	virtual ~RefcountedThreadsafe() {}
 
 	void AddRef() { refcount_.fetch_add(1, std::memory_order_relaxed); }
-	void Release() {
-		if (refcount_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+	// Returns true when this call dropped the last reference and the object was deleted.
+	bool Release() {
+		if (refcount_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			delete static_cast<T *>(this);
+			return true;
+		}
+		return false;
 	}
 
 private:
