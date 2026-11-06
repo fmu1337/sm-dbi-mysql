@@ -63,6 +63,12 @@ jobs:
       - name: Authentication test ${{ matrix.label }}
         run: |
           . ./versions.env
+          # Wait for the service name to resolve (it is the service label, "mysql").
+          for i in $(seq 1 30); do
+            if getent hosts mysql >/dev/null; then break; fi
+            sleep 2
+          done
+          getent hosts mysql || { echo "service host 'mysql' does not resolve"; cat /etc/hosts; exit 1; }
           bash scripts/auth-test.sh \
             ".cache/mariadb-${MARIADB_COMMIT}-static-auth-i386" \
             ".cache/openssl-${OPENSSL_VERSION}-i386" \
