@@ -75,7 +75,7 @@ if [ ! -f "$OPENSSL_PREFIX/lib/libcrypto.a" ]; then
 	tar -xzf "$tarball" -C "$src" --strip-components=1
 	(
 		cd "$src"
-		./Configure linux-generic32 -m32 -fPIC no-shared no-tests no-docs no-engine \
+		./Configure linux-generic32 -m32 -fPIC no-shared no-tests no-engine \
 			--prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl"
 		make -j"$(nproc)" build_libs
 		make install_dev
