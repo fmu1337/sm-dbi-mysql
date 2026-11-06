@@ -25,7 +25,9 @@ if [ -f "$SMSDK/public/smsdk_ext.cpp" ]; then
 else
   glue="$(dirname "$(ls "$SMSDK"/extensions/*/sdk/smsdk_ext.cpp | head -1)")"
 fi
-cp -a "$glue/smsdk_ext.cpp" "$glue/smsdk_ext.h" "$OUT/sdk/"
+# SourceMod 1.5 glue defines ITextParsers *textparsers twice (under the same #if); keep the first.
+awk -f "$ROOT/scripts/dedupe-glue.awk" "$glue/smsdk_ext.cpp" > "$OUT/sdk/smsdk_ext.cpp"
+cp -a "$glue/smsdk_ext.h" "$OUT/sdk/"
 
 cp -a "$ROOT/Makefile" "$OUT/Makefile"
 cp -a "$ROOT/exports.map" "$OUT/exports.map"

@@ -60,6 +60,11 @@ ifneq (,$(filter sm15 sm16 sm17,$(SM_LABEL)))
 CPPFLAGS += -include $(CURDIR)/amtl_compat.h
 endif
 
+ifeq (sm15,$(SM_LABEL))
+# SourceMod 1.5 ships no amtl: stand-in for am-refcounting-threadsafe.h.
+INCLUDE += -Icompat-sm15
+endif
+
 OBJ_FILES := $(OBJECTS:%.cpp=$(BIN_DIR)/%.o)
 
 .PHONY: all clean dirs extension
