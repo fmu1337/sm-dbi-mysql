@@ -3,7 +3,6 @@ name: Build
 on:
   push:
     branches: ['**']
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -11,35 +10,19 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  MARIADB_CONNECTOR_C_VERSION: '3.4.9'
-  MARIADB_CONNECTOR_C_RELEASE: '3.4.9-sm.5'
+permissions:
+  contents: read
 
 jobs:
+  # One dbi.mysql.<label>.ext.so per SourceMod SDK label (see matrix.txt).
   build:
     runs-on: ubuntu-latest
+    # Ubuntu 20.04: the glibc that 32-bit CS:S srcds servers run against.
     container: ubuntu:20.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: sm17
-            sm_repo: alliedmodders/sourcemod
-            sm_ref: 1.7-dev
-            mm_ref: 1.10-dev
-          - label: sm18
-            sm_repo: alliedmodders/sourcemod
-            sm_ref: 1.8-dev
-            mm_ref: 1.10-dev
-          - label: sm111
-            sm_repo: alliedmodders/sourcemod
-            sm_ref: 1.11-dev
-            mm_ref: 1.10-dev
-          - label: sm113
-            sm_repo: fmu1337/sourcemod-css34
-            sm_ref: 1.13.0.7394-mm1.12.0
-            mm_ref: 1.10-dev
-            css34: true
+        label: [sm15, sm16, sm17, sm18, sm19, sm110, sm111, sm112, sm113]
 
     steps:
       - name: Install toolchain
@@ -48,123 +31,60 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl git make \
-            gcc g++ gcc-multilib g++-multilib \
-            libssl-dev zlib1g-dev \
-            binutils
+            ca-certificates curl git make perl \
+            gcc g++ gcc-multilib g++-multilib binutils
           dpkg --add-architecture i386
           apt-get update
-          apt-get install -y --no-install-recommends \
-            libssl-dev:i386 zlib1g-dev:i386
+          apt-get install -y --no-install-recommends zlib1g-dev:i386
 
       - uses: actions/checkout@v4
 
-      - name: Fetch SDKs
-        run: |
-          set -e
-          mkdir -p /sdk
-          git clone --depth 1 -b "${{ matrix.mm_ref }}" \
-            https://github.com/alliedmodders/metamod-source /sdk/mmsource
+      - name: Cache SDKs and OpenSSL build
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt') }}
 
-          ensure_amtl() {
-            local root="$1"
-            if [ ! -f "$root/public/amtl/am-refcounting-threadsafe.h" ]; then
-              if [ -f "$root/public/amtl/amtl/am-refcounting-threadsafe.h" ]; then
-                :
-              else
-                rm -rf "$root/public/amtl"
-                git clone --depth 1 https://github.com/alliedmodders/amtl "$root/public/amtl"
-              fi
-            fi
-            # Flat includes expected by older mysql sources: <am-*.h>
-            if [ -d "$root/public/amtl/amtl" ]; then
-              for h in "$root/public/amtl/amtl/"*.h; do
-                base="$(basename "$h")"
-                if [ ! -e "$root/public/amtl/$base" ]; then
-                  ln -sfn "amtl/$base" "$root/public/amtl/$base"
-                fi
-              done
-            fi
-          }
-
-          ensure_sourcepawn() {
-            local root="$1"
-            # 1.7 vendors headers in public/sourcepawn; newer SM uses submodule.
-            if [ -f "$root/public/sourcepawn/sp_vm_types.h" ]; then
-              return 0
-            fi
-            if [ ! -f "$root/sourcepawn/include/sp_vm_types.h" ]; then
-              git -C "$root" submodule update --init --depth 1 sourcepawn \
-                || git clone --depth 1 https://github.com/alliedmodders/sourcepawn "$root/sourcepawn"
-            fi
-          }
-
-          if [ "${{ matrix.css34 }}" = "true" ]; then
-            git clone "https://github.com/${{ matrix.sm_repo }}" /sdk/css34
-            cd /sdk/css34
-            git checkout "${{ matrix.sm_ref }}"
-            git submodule update --init sourcemod
-            cd sourcemod
-            git submodule update --init public/amtl || true
-            git submodule update --init sourcepawn || true
-            ensure_amtl /sdk/css34/sourcemod
-            ensure_sourcepawn /sdk/css34/sourcemod
-            ln -sfn /sdk/css34/sourcemod /sdk/sourcemod
-          else
-            git clone --depth 1 -b "${{ matrix.sm_ref }}" \
-              "https://github.com/${{ matrix.sm_repo }}" /sdk/sourcemod
-            cd /sdk/sourcemod
-            git submodule update --init --depth 1 public/amtl || true
-            git submodule update --init --depth 1 sourcepawn || true
-            ensure_amtl /sdk/sourcemod
-            ensure_sourcepawn /sdk/sourcemod
-          fi
-
-          curl -fsSL -o /tmp/mariadb.tgz \
-            "https://github.com/alliedmodders/mariadb-connector-c/releases/download/v${MARIADB_CONNECTOR_C_RELEASE}/mariadb-connector-c-${MARIADB_CONNECTOR_C_VERSION}-linux-x86.tar.gz"
-          tar -xzf /tmp/mariadb.tgz -C /sdk
-          ln -sfn "/sdk/mariadb-connector-c-${MARIADB_CONNECTOR_C_VERSION}-x86" /sdk/mariadb
-
-      - name: Prepare sources
-        run: |
-          chmod +x scripts/prepare.sh
-          SMSDK=/sdk/sourcemod OUT="$GITHUB_WORKSPACE/work" ./scripts/prepare.sh
-
-      - name: Build
-        working-directory: work
-        run: |
-          make -j"$(nproc)" \
-            SMSDK=/sdk/sourcemod \
-            MMSOURCE=/sdk/mmsource \
-            MARIADB=/sdk/mariadb \
-            SM_LABEL=${{ matrix.label }}
-          OUT="build/${{ matrix.label }}/dbi.mysql.ext.so"
-          test -f "$OUT"
-          echo "=== ldd ==="
-          ldd "$OUT"
-          echo "=== exported symbols ==="
-          nm -D --defined-only "$OUT" | head -50
-          # Must not depend on shared libmysql / libssl
-          if ldd "$OUT" | grep -E 'libmysql|libmariadb|libssl\.so|libcrypto\.so'; then
-            echo "ERROR: unexpected shared library dependency" >&2
-            exit 1
-          fi
-          # Hide OpenSSL / mysql symbols from dynamic export
-          if nm -D --defined-only "$OUT" | grep -E ' (SSL_|EVP_|mysql_)'; then
-            echo "ERROR: TLS/mysql symbols are exported" >&2
-            exit 1
-          fi
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$OUT" "$GITHUB_WORKSPACE/dist/dbi.mysql.${{ matrix.label }}.ext.so"
-          (cd "$GITHUB_WORKSPACE/dist" && sha256sum "dbi.mysql.${{ matrix.label }}.ext.so" > "dbi.mysql.${{ matrix.label }}.ext.so.sha256")
+      - name: Build ${{ matrix.label }}
+        run: bash scripts/build-label.sh ${{ matrix.label }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: dbi-mysql-${{ matrix.label }}
-          path: dist/
+          path: dist/${{ matrix.label }}/
 
+  # scripting/mysql_heatwave_test.sp, compiled with the SourceMod 1.13 compiler.
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch SourceMod 1.13 spcomp and includes
+        run: |
+          set -euo pipefail
+          . ./versions.env
+          curl -fsSL -o sm113.tar.gz "$SPCOMP_DROP_URL"
+          echo "$SPCOMP_DROP_SHA256  sm113.tar.gz" | sha256sum -c -
+          mkdir -p sm113 && tar -xzf sm113.tar.gz -C sm113
+          chmod +x sm113/addons/sourcemod/scripting/spcomp
+
+      - name: Compile test plugin
+        run: |
+          set -euo pipefail
+          mkdir -p dist/plugin
+          sm113/addons/sourcemod/scripting/spcomp \
+            -i sm113/addons/sourcemod/scripting/include \
+            scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.smx
+          cd dist/plugin && sha256sum mysql_heatwave_test.smx > mysql_heatwave_test.smx.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbi-mysql-plugin
+          path: dist/plugin/
+
+  # Gathers everything into one set with a sha256SUMS file. Release is manual.
   package:
-    needs: build
+    needs: [build, plugin]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -175,38 +95,15 @@ jobs:
 
       - name: Collect
         run: |
-          mkdir -p dist
-          cp artifacts/*.so artifacts/*.sha256 dist/ || cp -r artifacts/* dist/
-          find dist -type f -ls
-          cat dist/*.sha256
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -name '*.so' -exec cp {} release/ \;
+          cp artifacts/mysql_heatwave_test.smx release/
+          cd release
+          sha256sum *.so *.smx > sha256SUMS
+          cat sha256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dbi-mysql
-          path: dist/
-
-  release:
-    needs: package
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dbi-mysql
-          path: dist
-
-      - name: Stable release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
-
-      - name: Experimental release
-        if: github.ref == 'refs/heads/master'
-        run: |
-          gh release delete experimental --cleanup-tag --yes || true
-          gh release create experimental dist/* --prerelease --target "$GITHUB_SHA" \
-            --title "Experimental" --notes "Automatic build of $GITHUB_SHA"
+          name: sm-dbi-mysql-v2
+          path: release/

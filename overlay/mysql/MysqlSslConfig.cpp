@@ -1,294 +1,423 @@
 /**
- * Parse ssl_mode / ssl_ca from databases.cfg (core drops unknown keys).
+ * vim: set ts=4 sw=4 tw=99 noet :
+ * =============================================================================
+ * sm-dbi-mysql v2: ssl_mode / ssl_ca for the MySQL DBI driver.
+ * =============================================================================
+ *
+ * This program is free software; you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License, version 3.0, as published by the
+ * Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "MysqlSslConfig.h"
-#include "smsdk_ext.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <sys/stat.h>
+#include <string>
+#include <vector>
 
-MysqlSslConfig g_MysqlSslConfig;
+#include "smsdk_ext.h"
+#include <ma_pvio.h>
 
-static MysqlSslMode ParseMode(const char *value)
+using namespace SourceMod;
+
+/* ---------------------------------------------------------------------------
+ * ssl_mode names
+ * ------------------------------------------------------------------------- */
+
+static const struct
+{
+	const char *name;
+	MysqlSslMode mode;
+} kModes[] = {
+	{"disabled", MysqlSsl_Disabled},
+	{"preferred", MysqlSsl_Preferred},
+	{"required", MysqlSsl_Required},
+	{"verify_ca", MysqlSsl_VerifyCA},
+	{"verify_identity", MysqlSsl_VerifyIdentity},
+};
+
+static bool EqualsNoCase(const char *a, const char *b)
+{
+	for (;; a++, b++)
+	{
+		unsigned char x = (unsigned char)*a, y = (unsigned char)*b;
+		if (x >= 'A' && x <= 'Z')
+			x = x - 'A' + 'a';
+		if (y >= 'A' && y <= 'Z')
+			y = y - 'A' + 'a';
+		if (x != y)
+			return false;
+		if (!x)
+			return true;
+	}
+}
+
+/* NULL or "" is the default (disabled). False for any other unknown value. */
+static bool ParseMode(const char *value, MysqlSslMode *mode)
 {
 	if (!value || !value[0])
-		return MysqlSsl_Preferred;
-	if (strcasecmp(value, "disabled") == 0)
-		return MysqlSsl_Disabled;
-	if (strcasecmp(value, "preferred") == 0)
-		return MysqlSsl_Preferred;
-	if (strcasecmp(value, "required") == 0)
-		return MysqlSsl_Required;
-	if (strcasecmp(value, "verify_ca") == 0)
-		return MysqlSsl_VerifyCA;
-	if (strcasecmp(value, "verify_identity") == 0)
-		return MysqlSsl_VerifyIdentity;
-	return MysqlSsl_Preferred;
-}
-
-static void TrimInPlace(char *s)
-{
-	char *start = s;
-	while (*start && isspace((unsigned char)*start))
-		start++;
-	if (start != s)
-		memmove(s, start, strlen(start) + 1);
-	size_t len = strlen(s);
-	while (len && isspace((unsigned char)s[len - 1]))
-		s[--len] = '\0';
-}
-
-static void Unquote(char *s)
-{
-	TrimInPlace(s);
-	size_t len = strlen(s);
-	if (len >= 2 && s[0] == '"' && s[len - 1] == '"')
 	{
-		s[len - 1] = '\0';
-		memmove(s, s + 1, len - 1);
+		*mode = MysqlSsl_Disabled;
+		return true;
 	}
+	for (size_t i = 0; i < sizeof(kModes) / sizeof(kModes[0]); i++)
+	{
+		if (EqualsNoCase(value, kModes[i].name))
+		{
+			*mode = kModes[i].mode;
+			return true;
+		}
+	}
+	return false;
 }
 
-void MysqlSslConfig::Init()
+const char *MysqlSslModeName(MysqlSslMode mode)
 {
-	m_Count = 0;
-	m_Loaded = false;
-	m_Mtime = -1;
-	m_Path[0] = '\0';
-	if (smutils)
-		smutils->BuildPath(Path_SM, m_Path, sizeof(m_Path), "configs/databases.cfg");
-	Reload();
+	for (size_t i = 0; i < sizeof(kModes) / sizeof(kModes[0]); i++)
+	{
+		if (kModes[i].mode == mode)
+			return kModes[i].name;
+	}
+	return "?";
 }
 
-void MysqlSslConfig::Reload()
+/* ---------------------------------------------------------------------------
+ * databases.cfg
+ *
+ * SourceMod core passes a DatabaseInfo without the ssl_* keys, so the sections are
+ * read again with the same SMC parser core uses (textparsers, not a hand parser).
+ * A file is read on every connect: connects are rare and this keeps edits live.
+ * ------------------------------------------------------------------------- */
+
+struct ConfigEntry
 {
-	if (!m_Path[0] && smutils)
-		smutils->BuildPath(Path_SM, m_Path, sizeof(m_Path), "configs/databases.cfg");
-	if (!m_Path[0])
-		return;
+	std::string host;
+	std::string user;
+	std::string pass;
+	std::string database;
+	std::string driver;
+	std::string ssl_mode;
+	std::string ssl_ca;
+	unsigned int port;
+	bool hasSslMode;
+	bool hasSslCa;
 
-	struct stat st;
-	long long mtime = 0;
-	if (stat(m_Path, &st) == 0)
-		mtime = (long long)st.st_mtime;
-	if (m_Loaded && mtime == m_Mtime)
-		return;
+	ConfigEntry() : port(0), hasSslMode(false), hasSslCa(false) {}
+};
 
-	m_Count = 0;
-	ParseFile(m_Path);
-	m_Mtime = mtime;
-	m_Loaded = true;
+class ConfigListener : public ITextListener_SMC
+{
+public:
+	ConfigListener() : m_Depth(0) {}
+
+	void ReadSMC_ParseStart() override
+	{
+		m_Depth = 0;
+	}
+
+	SMCResult ReadSMC_NewSection(const SMCStates *states, const char *name) override
+	{
+		(void)states;
+		(void)name;
+		m_Depth++;
+		if (m_Depth == 2)
+		{
+			m_Current = ConfigEntry();
+		}
+		return SMCResult_Continue;
+	}
+
+	SMCResult ReadSMC_KeyValue(const SMCStates *states, const char *key, const char *value) override
+	{
+		(void)states;
+		if (m_Depth == 1)
+		{
+			if (EqualsNoCase(key, "driver_default"))
+				m_DriverDefault = value;
+			return SMCResult_Continue;
+		}
+		if (m_Depth != 2)
+			return SMCResult_Continue;
+
+		if (EqualsNoCase(key, "driver"))
+			m_Current.driver = value;
+		else if (EqualsNoCase(key, "host"))
+			m_Current.host = value;
+		else if (EqualsNoCase(key, "user"))
+			m_Current.user = value;
+		else if (EqualsNoCase(key, "pass"))
+			m_Current.pass = value;
+		else if (EqualsNoCase(key, "database"))
+			m_Current.database = value;
+		else if (EqualsNoCase(key, "port"))
+			m_Current.port = (unsigned int)strtoul(value, NULL, 10);
+		else if (EqualsNoCase(key, "ssl_mode"))
+		{
+			m_Current.ssl_mode = value;
+			m_Current.hasSslMode = true;
+		}
+		else if (EqualsNoCase(key, "ssl_ca"))
+		{
+			m_Current.ssl_ca = value;
+			m_Current.hasSslCa = true;
+		}
+		return SMCResult_Continue;
+	}
+
+	SMCResult ReadSMC_LeavingSection(const SMCStates *states) override
+	{
+		(void)states;
+		if (m_Depth == 2)
+		{
+			m_Entries.push_back(m_Current);
+		}
+		m_Depth--;
+		return SMCResult_Continue;
+	}
+
+	/* An entry belongs to this driver when its driver is mysql, or when it names
+	 * no driver and driver_default is mysql (SourceMod's own rule). */
+	bool IsMysql(const ConfigEntry &e) const
+	{
+		if (EqualsNoCase(e.driver.c_str(), "mysql"))
+			return true;
+		if (e.driver.empty() || EqualsNoCase(e.driver.c_str(), "default"))
+			return EqualsNoCase(m_DriverDefault.c_str(), "mysql");
+		return false;
+	}
+
+	const std::vector<ConfigEntry> &Entries() const { return m_Entries; }
+
+private:
+	int m_Depth;
+	ConfigEntry m_Current;
+	std::string m_DriverDefault;
+	std::vector<ConfigEntry> m_Entries;
+};
+
+static bool SameText(const char *a, const char *b)
+{
+	if (a == NULL || b == NULL)
+		return a == b;
+	return strcmp(a, b) == 0;
 }
 
-void MysqlSslConfig::ParseFile(const char *path)
+static bool SameSsl(const ConfigEntry &a, const ConfigEntry &b)
 {
-	FILE *fp = fopen(path, "rt");
+	return a.hasSslMode == b.hasSslMode
+		&& a.ssl_mode == b.ssl_mode
+		&& a.hasSslCa == b.hasSslCa
+		&& a.ssl_ca == b.ssl_ca;
+}
+
+/* Resolves ssl_ca against addons/sourcemod/ unless it is absolute. */
+static bool ResolveCa(const char *ca, MysqlSslSettings *out, char *error, size_t maxlength)
+{
+	bool absolute = (ca[0] == '/' || ca[0] == '\\')
+		|| (((ca[0] >= 'A' && ca[0] <= 'Z') || (ca[0] >= 'a' && ca[0] <= 'z')) && ca[1] == ':');
+
+	int written;
+	if (absolute)
+		written = snprintf(out->ca, sizeof(out->ca), "%s", ca);
+	else
+		written = snprintf(out->ca, sizeof(out->ca), "%s/%s", smutils->GetSourceModPath(), ca);
+
+	if (written < 0 || (size_t)written >= sizeof(out->ca))
+	{
+		snprintf(error, maxlength, "ssl_ca path too long: \"%s\"", ca);
+		out->ca[0] = '\0';
+		return false;
+	}
+
+	FILE *fp = fopen(out->ca, "rb");
 	if (!fp)
-		return;
-
-	char line[1024];
-	int depth = 0;
-	bool inDatabases = false;
-	bool inSection = false;
-	Entry cur;
-	memset(&cur, 0, sizeof(cur));
-	cur.mode = MysqlSsl_Preferred;
-
-	while (fgets(line, sizeof(line), fp))
 	{
-		char *p = line;
-		while (*p && isspace((unsigned char)*p))
-			p++;
-		if (*p == '\0' || *p == '#')
-			continue;
-		if (p[0] == '/' && p[1] == '/')
-			continue;
-
-		char *cmt = strstr(p, "//");
-		if (cmt)
-			*cmt = '\0';
-
-		char buf[1024];
-		strncpy(buf, p, sizeof(buf) - 1);
-		buf[sizeof(buf) - 1] = '\0';
-		TrimInPlace(buf);
-		if (!buf[0])
-			continue;
-
-		if (buf[0] == '{')
-		{
-			depth++;
-			continue;
-		}
-		if (buf[0] == '}')
-		{
-			if (inSection && depth == 2)
-			{
-				if (m_Count < (sizeof(m_Entries) / sizeof(m_Entries[0])) && cur.host[0])
-					m_Entries[m_Count++] = cur;
-				inSection = false;
-				memset(&cur, 0, sizeof(cur));
-				cur.mode = MysqlSsl_Preferred;
-			}
-			if (depth > 0)
-				depth--;
-			if (depth == 0)
-				inDatabases = false;
-			continue;
-		}
-
-		if (buf[0] == '"')
-		{
-			char name[256];
-			strncpy(name, buf, sizeof(name) - 1);
-			name[sizeof(name) - 1] = '\0';
-			/* Only the first quoted token is the section name. */
-			char *end = strchr(name + 1, '"');
-			if (end)
-				end[1] = '\0';
-			Unquote(name);
-
-			if (!inDatabases && strcasecmp(name, "Databases") == 0)
-			{
-				inDatabases = true;
-				continue;
-			}
-			if (inDatabases && depth == 1 && strchr(buf + 1, '"') != strrchr(buf, '"'))
-			{
-				/* key/value line with two quoted strings — fall through */
-			}
-			else if (inDatabases && depth == 1)
-			{
-				/* Count quotes: section title has a single pair. */
-				int quotes = 0;
-				for (char *c = buf; *c; c++)
-					if (*c == '"')
-						quotes++;
-				if (quotes == 2)
-				{
-					inSection = true;
-					memset(&cur, 0, sizeof(cur));
-					cur.mode = MysqlSsl_Preferred;
-					continue;
-				}
-			}
-		}
-
-		if (inSection && depth >= 2)
-		{
-			char key[128] = {0};
-			char value[512] = {0};
-			char *q1 = strchr(buf, '"');
-			if (!q1)
-				continue;
-			char *q2 = strchr(q1 + 1, '"');
-			if (!q2)
-				continue;
-			size_t klen = (size_t)(q2 - q1 - 1);
-			if (klen >= sizeof(key))
-				klen = sizeof(key) - 1;
-			memcpy(key, q1 + 1, klen);
-			key[klen] = '\0';
-
-			char *q3 = strchr(q2 + 1, '"');
-			if (!q3)
-				continue;
-			char *q4 = strchr(q3 + 1, '"');
-			if (!q4)
-				continue;
-			size_t vlen = (size_t)(q4 - q3 - 1);
-			if (vlen >= sizeof(value))
-				vlen = sizeof(value) - 1;
-			memcpy(value, q3 + 1, vlen);
-			value[vlen] = '\0';
-
-			if (strcasecmp(key, "host") == 0)
-				strncpy(cur.host, value, sizeof(cur.host) - 1);
-			else if (strcasecmp(key, "user") == 0)
-				strncpy(cur.user, value, sizeof(cur.user) - 1);
-			else if (strcasecmp(key, "database") == 0)
-				strncpy(cur.database, value, sizeof(cur.database) - 1);
-			else if (strcasecmp(key, "port") == 0)
-			{
-				cur.port = (unsigned int)atoi(value);
-				cur.hasPort = true;
-			}
-			else if (strcasecmp(key, "ssl_mode") == 0)
-				cur.mode = ParseMode(value);
-			else if (strcasecmp(key, "ssl_ca") == 0)
-				strncpy(cur.ca, value, sizeof(cur.ca) - 1);
-		}
+		snprintf(error, maxlength, "ssl_mode %s: cannot read ssl_ca \"%s\"",
+			MysqlSslModeName(out->mode), out->ca);
+		out->ca[0] = '\0';
+		return false;
 	}
-
 	fclose(fp);
-}
-
-bool MysqlSslConfig::Match(const SourceMod::DatabaseInfo *info, size_t index) const
-{
-	const Entry &e = m_Entries[index];
-	if (!info->host || strcmp(e.host, info->host) != 0)
-		return false;
-	if (!info->user || strcmp(e.user, info->user) != 0)
-		return false;
-	if (!info->database || strcmp(e.database, info->database) != 0)
-		return false;
-	if (e.hasPort && e.port != info->port)
-		return false;
 	return true;
 }
 
-void MysqlSslConfig::Lookup(const SourceMod::DatabaseInfo *info, MysqlSslOptions *out)
+bool MysqlSslLookup(const DatabaseInfo *info, MysqlSslSettings *out, char *error, size_t maxlength)
 {
-	out->mode = MysqlSsl_Preferred;
-	out->caPath[0] = '\0';
-	Reload();
+	out->mode = MysqlSsl_Disabled;
+	out->ca[0] = '\0';
+	error[0] = '\0';
 
-	for (size_t i = 0; i < m_Count; i++)
+	char path[PLATFORM_MAX_PATH];
+	smutils->BuildPath(Path_SM, path, sizeof(path), "configs/databases.cfg");
+
+	ConfigListener listener;
+	SMCError perr = textparsers->ParseFile_SMC(path, &listener, NULL);
+	if (perr != SMCError_Okay)
 	{
-		if (!Match(info, i))
+		const char *why = textparsers->GetSMCErrorString(perr);
+		snprintf(error, maxlength, "cannot parse databases.cfg for ssl_mode: %s", why ? why : "unknown error");
+		return false;
+	}
+
+	/* Match on the fields SourceMod itself passes in. Sections that differ only by
+	 * ssl_* keys cannot be told apart, so they must not share a connection. */
+	const ConfigEntry *found = NULL;
+	const std::vector<ConfigEntry> &entries = listener.Entries();
+	for (size_t i = 0; i < entries.size(); i++)
+	{
+		const ConfigEntry &e = entries[i];
+		if (!listener.IsMysql(e))
 			continue;
-		out->mode = m_Entries[i].mode;
-		if (m_Entries[i].ca[0])
+		if (!SameText(e.host.c_str(), info->host)
+			|| !SameText(e.user.c_str(), info->user)
+			|| !SameText(e.pass.c_str(), info->pass)
+			|| !SameText(e.database.c_str(), info->database)
+			|| e.port != info->port)
+			continue;
+
+		if (!found)
 		{
-			if (m_Entries[i].ca[0] == '/')
-				strncpy(out->caPath, m_Entries[i].ca, sizeof(out->caPath) - 1);
-			else if (smutils)
-				smutils->BuildPath(Path_SM, out->caPath, sizeof(out->caPath), "%s", m_Entries[i].ca);
-			else
-				strncpy(out->caPath, m_Entries[i].ca, sizeof(out->caPath) - 1);
+			found = &e;
 		}
+		else if (!SameSsl(*found, e))
+		{
+			snprintf(error, maxlength,
+				"databases.cfg has two mysql sections for %s/%s with different ssl_mode or ssl_ca; "
+				"give them different host, user, database or port",
+				info->host ? info->host : "", info->database ? info->database : "");
+			return false;
+		}
+	}
+
+	if (!found)
+		return true; /* no section: plain connection, as stock SourceMod */
+
+	if (!ParseMode(found->hasSslMode ? found->ssl_mode.c_str() : NULL, &out->mode))
+	{
+		snprintf(error, maxlength,
+			"ssl_mode \"%s\" is not one of disabled, preferred, required, verify_ca, verify_identity",
+			found->ssl_mode.c_str());
+		return false;
+	}
+
+	if (out->mode != MysqlSsl_VerifyCA && out->mode != MysqlSsl_VerifyIdentity)
+		return true; /* only the verify modes read ssl_ca */
+
+	if (!found->hasSslCa || found->ssl_ca.empty())
+	{
+		snprintf(error, maxlength,
+			"ssl_mode %s needs ssl_ca (the server's CA certificate, PEM, relative to addons/sourcemod/)",
+			MysqlSslModeName(out->mode));
+		return false;
+	}
+
+	return ResolveCa(found->ssl_ca.c_str(), out, error, maxlength);
+}
+
+/* ---------------------------------------------------------------------------
+ * MariaDB Connector/C options
+ *
+ * The verification callback and the TLS version are MariaDB 3.4 options. The
+ * MARIADB_TLS head used by the callback below is the one in ma_tls.h of the
+ * pinned release (MARIADB_PACKAGE_VERSION_ID 30409); the build stops if the
+ * library is changed.
+ * ------------------------------------------------------------------------- */
+
+extern "C" int ma_pvio_tls_verify_server_cert(void *ctls, unsigned int flags);
+
+#if MARIADB_PACKAGE_VERSION_ID != 30409
+#error "sm-dbi-mysql: re-check MysqlSslConfig.cpp against this MariaDB Connector/C (MARIADB_TLS head)"
+#endif
+
+/* The leading members of MARIADB_TLS (ma_tls.h). */
+struct MysqlTlsHead
+{
+	void *data;
+	MARIADB_PVIO *pvio;
+};
+
+/* "verify_ca": the chain is checked, the host name is not. */
+static int VerifyChainOnly(void *ctls, unsigned int flags)
+{
+	return ma_pvio_tls_verify_server_cert(ctls, flags & ~MARIADB_TLS_VERIFY_HOST);
+}
+
+/* "required": TLS, but no certificate check. OpenSSL records chain problems during
+ * the handshake; the connector would fail the login later unless they are cleared. */
+static int AcceptUnverified(void *ctls, unsigned int flags)
+{
+	(void)flags;
+	MysqlTlsHead *tls = (MysqlTlsHead *)ctls;
+	if (!tls || !tls->pvio || tls->pvio->ctls != ctls || !tls->pvio->mysql)
+		return 1;
+	tls->pvio->mysql->net.tls_verify_status = 0;
+	return 0;
+}
+
+void MysqlSslApply(MYSQL *mysql, const MysqlSslSettings &ssl)
+{
+	if (ssl.mode == MysqlSsl_Disabled)
+	{
+		/* No TLS option at all: the connection stays plain, as before SSL support. */
+		my_bool verify = 0;
+		mysql_options(mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char *)&verify);
 		return;
+	}
+
+	/* preferred / required / verify_*: TLS is requested. Certificate verification is
+	 * on only for required and above (MariaDB 3.3.10+ verifies by default). */
+	my_bool enforce = 1;
+	my_bool verify = (ssl.mode >= MysqlSsl_Required);
+	mysql_options(mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char *)&verify);
+	mysql_options(mysql, MYSQL_OPT_SSL_ENFORCE, (const char *)&enforce);
+
+	/* HeatWave and MySQL 8.4 speak TLS 1.2 and 1.3 only. */
+	mysql_options(mysql, MARIADB_OPT_TLS_VERSION, "TLSv1.2,TLSv1.3");
+
+	switch (ssl.mode)
+	{
+	case MysqlSsl_Required:
+		mysql_options(mysql, MARIADB_OPT_TLS_VERIFICATION_CALLBACK, (const void *)AcceptUnverified);
+		break;
+	case MysqlSsl_VerifyCA:
+		mysql_options(mysql, MYSQL_OPT_SSL_CA, ssl.ca);
+		mysql_options(mysql, MARIADB_OPT_TLS_VERIFICATION_CALLBACK, (const void *)VerifyChainOnly);
+		break;
+	case MysqlSsl_VerifyIdentity:
+		mysql_options(mysql, MYSQL_OPT_SSL_CA, ssl.ca);
+		break;
+	default:
+		break;
 	}
 }
 
-void ApplyMysqlSslOptions(MYSQL *mysql, const MysqlSslOptions *opt)
+bool MysqlSslVerifySession(MYSQL *mysql, const MysqlSslSettings &ssl, char *error, size_t maxlength)
 {
-	my_bool off = 0;
-	my_bool on = 1;
-
-	mysql_options(mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char *)&off);
-
-	switch (opt->mode)
+	/* preferred may fall back to plain; required and above must be encrypted. */
+	if (ssl.mode >= MysqlSsl_Required && mysql_get_ssl_cipher(mysql) == NULL)
 	{
-	case MysqlSsl_Disabled:
-		break;
-	case MysqlSsl_Preferred:
-	case MysqlSsl_Required:
-		mysql_options(mysql, MYSQL_OPT_SSL_ENFORCE, (const char *)&on);
-		break;
-	case MysqlSsl_VerifyCA:
-	case MysqlSsl_VerifyIdentity:
-		mysql_options(mysql, MYSQL_OPT_SSL_ENFORCE, (const char *)&on);
-		mysql_options(mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char *)&on);
-		if (opt->caPath[0])
-			mysql_options(mysql, MYSQL_OPT_SSL_CA, opt->caPath);
-		break;
+		snprintf(error, maxlength, "[0]: ssl_mode %s: the session is not encrypted",
+			MysqlSslModeName(ssl.mode));
+		return false;
 	}
+	return true;
+}
 
-#ifdef MARIADB_OPT_TLS_VERSION
-	mysql_options(mysql, MARIADB_OPT_TLS_VERSION, (void *)"TLSv1.2,TLSv1.3");
-#endif
+void MysqlSslDescribe(MYSQL *mysql, char *out, size_t maxlength)
+{
+	const char *cipher = mysql_get_ssl_cipher(mysql);
+	if (cipher && cipher[0])
+		snprintf(out, maxlength, "tls=%s", cipher);
+	else
+		snprintf(out, maxlength, "tls=off");
 }
