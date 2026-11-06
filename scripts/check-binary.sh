@@ -19,7 +19,7 @@ fi
 
 # 2. Only system runtime libraries may be needed (no OpenSSL, MariaDB, or other .so).
 allowed='^(linux-gate\.so\.1|linux-vdso\.so\.1|libc\.so\.6|libm\.so\.6|libdl\.so\.2|libpthread\.so\.0|librt\.so\.1|libz\.so\.1|libstdc\+\+\.so\.6|libgcc_s\.so\.1|ld-linux\.so\.2)$'
-bad="$(ldd "$BIN" | awk '{print $1}' | grep -Ev "$allowed" | grep -v '^$' || true)"
+bad="$(ldd "$BIN" | awk '{print $1}' | sed 's|.*/||' | grep -Ev "$allowed" | grep -v '^$' || true)"
 if [ -n "$bad" ]; then
 	echo "ERROR: unexpected shared library dependencies:" >&2
 	echo "$bad" >&2
