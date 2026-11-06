@@ -109,6 +109,9 @@ if nm -D --defined-only "$BUILT" | grep -E ' (SSL_|EVP_|mysql_|ma_)'; then
 	exit 1
 fi
 
+# Unresolved symbols, unexpected shared libraries, and a dlopen() as srcds does it.
+"$ROOT/scripts/check-binary.sh" "$BUILT"
+
 cp "$BUILT" "$DIST/$LABEL/dbi.mysql.$LABEL.ext.so"
 (cd "$DIST/$LABEL" && sha256sum "dbi.mysql.$LABEL.ext.so" > "dbi.mysql.$LABEL.ext.so.sha256")
 cat "$DIST/$LABEL/dbi.mysql.$LABEL.ext.so.sha256"

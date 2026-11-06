@@ -227,10 +227,27 @@ public Action Timer_WaitThreaded(Handle timer, any data)
 	return Plugin_Stop;
 }
 
+/*
+ * SQL_TQuery callback. SourceMod 1.7 and older declare it with Handle arguments,
+ * 1.8+ with Database/DBResultSet. A compiler that predates the typed form needs
+ * -DSM_LEGACY_TQUERY (the CI builds the 1.7 variant with it).
+ */
+#if defined SM_LEGACY_TQUERY
+public void OnThreadedQuery(Handle owner, Handle hndl, const char[] error, any data)
+{
+	ThreadedResult(hndl != null, error);
+}
+#else
 public void OnThreadedQuery(Database db, DBResultSet results, const char[] error, any data)
 {
+	ThreadedResult(results != null, error);
+}
+#endif
+
+static void ThreadedResult(bool ok, const char[] error)
+{
 	g_ThreadedDone++;
-	if (results == null)
+	if (!ok)
 	{
 		g_ThreadedErrors++;
 		if (g_ThreadedErrors == 1)

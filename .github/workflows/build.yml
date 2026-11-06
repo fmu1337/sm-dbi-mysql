@@ -35,7 +35,8 @@ jobs:
             gcc g++ gcc-multilib g++-multilib binutils
           dpkg --add-architecture i386
           apt-get update
-          apt-get install -y --no-install-recommends zlib1g-dev:i386
+          apt-get install -y --no-install-recommends \
+            zlib1g-dev:i386 libc6-i386 libstdc++6:i386 libgcc-s1:i386
 
       - uses: actions/checkout@v4
 
@@ -53,20 +54,24 @@ jobs:
           name: dbi-mysql-${{ matrix.label }}
           path: dist/${{ matrix.label }}/
 
-  # scripting/mysql_heatwave_test.sp, compiled with the SourceMod 1.13 compiler.
+  # scripting/mysql_heatwave_test.sp, compiled with the SourceMod 1.13 and 1.7 compilers.
   plugin:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch SourceMod 1.13 spcomp and includes
+      - name: Fetch SourceMod 1.13 and 1.7 compilers
         run: |
           set -euo pipefail
           . ./versions.env
           curl -fsSL -o sm113.tar.gz "$SPCOMP_DROP_URL"
           echo "$SPCOMP_DROP_SHA256  sm113.tar.gz" | sha256sum -c -
           mkdir -p sm113 && tar -xzf sm113.tar.gz -C sm113
-          chmod +x sm113/addons/sourcemod/scripting/spcomp
+          curl -fsSL -o sm17.tar.gz "$SPCOMP17_DROP_URL"
+          echo "$SPCOMP17_DROP_SHA256  sm17.tar.gz" | sha256sum -c -
+          mkdir -p sm17 && tar -xzf sm17.tar.gz -C sm17
+          chmod +x sm113/addons/sourcemod/scripting/spcomp sm17/addons/sourcemod/scripting/spcomp
+          sm17/addons/sourcemod/scripting/spcomp -h 2>&1 | head -2 || true
 
       - name: Compile test plugin
         run: |
@@ -75,7 +80,10 @@ jobs:
           sm113/addons/sourcemod/scripting/spcomp \
             -i sm113/addons/sourcemod/scripting/include \
             scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.smx
-          cd dist/plugin && sha256sum mysql_heatwave_test.smx > mysql_heatwave_test.smx.sha256
+          sm17/addons/sourcemod/scripting/spcomp \
+            -i sm17/addons/sourcemod/scripting/include -DSM_LEGACY_TQUERY \
+            scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.sm17.smx
+          cd dist/plugin && sha256sum *.smx > mysql_heatwave_test.smx.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -98,7 +106,7 @@ jobs:
           set -euo pipefail
           mkdir -p release
           find artifacts -name '*.so' -exec cp {} release/ \;
-          cp artifacts/mysql_heatwave_test.smx release/
+          cp artifacts/*.smx release/
           cd release
           sha256sum *.so *.smx > sha256SUMS
           cat sha256SUMS
