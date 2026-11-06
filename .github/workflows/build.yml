@@ -43,7 +43,7 @@ jobs:
           key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt') }}
 
       - name: Build ${{ matrix.label }}
-        run: ./scripts/build-label.sh ${{ matrix.label }}
+        run: bash scripts/build-label.sh ${{ matrix.label }}
 
       - uses: actions/upload-artifact@v4
         with:

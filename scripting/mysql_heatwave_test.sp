@@ -67,7 +67,7 @@ static void Check(bool ok, const char[] name, const char[] fmt = "", any ...)
 /* Full test                                                                */
 /* ------------------------------------------------------------------------ */
 
-public Action Cmd_Test(int args)
+public Action Cmd_Test(int client, int args)
 {
 	g_Passed = 0;
 	g_Failed = 0;
@@ -283,7 +283,7 @@ static void SslProbe(const char[] prefix, const char[] mode)
 	delete db;
 }
 
-public Action Cmd_Ssl(int args)
+public Action Cmd_Ssl(int client, int args)
 {
 	char prefix[64] = "mysql_ssl";
 	if (args >= 1)
