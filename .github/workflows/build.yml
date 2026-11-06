@@ -31,7 +31,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl git make perl \
+            ca-certificates curl git make cmake perl \
             gcc g++ gcc-multilib g++-multilib binutils
           dpkg --add-architecture i386
           apt-get update
@@ -80,9 +80,12 @@ jobs:
           sm113/addons/sourcemod/scripting/spcomp \
             -i sm113/addons/sourcemod/scripting/include \
             scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.smx
+          # spcomp 1.7 has no -D option: the legacy define goes into a copy of the source.
+          mkdir -p build
+          { echo '#define SM_LEGACY_TQUERY'; cat scripting/mysql_heatwave_test.sp; } > build/mysql_heatwave_test_legacy.sp
           sm17/addons/sourcemod/scripting/spcomp \
-            -i sm17/addons/sourcemod/scripting/include -DSM_LEGACY_TQUERY \
-            scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.sm17.smx
+            -i sm17/addons/sourcemod/scripting/include \
+            build/mysql_heatwave_test_legacy.sp -o dist/plugin/mysql_heatwave_test.sm17.smx
           cd dist/plugin && sha256sum *.smx > mysql_heatwave_test.smx.sha256
 
       - uses: actions/upload-artifact@v4

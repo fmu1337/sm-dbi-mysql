@@ -9,7 +9,7 @@ archive for those builds. Newer SourceMod versions ship this driver themselves.
   [`b34de51`](https://github.com/alliedmodders/sourcemod/tree/b34de51b8c7f92fc2a7242fc0195e2d64a69cefd),
   including the locking fixes for [SourceMod #1207](https://github.com/alliedmodders/sourcemod/issues/1207)
   (upstream #2528) and #2554.
-- Built with MariaDB Connector/C 3.4.9 (static) and OpenSSL 3.0.22 (static), 32-bit Linux, glibc from Ubuntu 20.04.
+- Built from source: MariaDB Connector/C 3.4.9 (upstream v3.4.9 commit cc4d78c, static) and OpenSSL 3.0.22 (static), 32-bit Linux, glibc from Ubuntu 20.04. Nothing is prebuilt.
 - `caching_sha2_password`, `sha256_password`, `mysql_native_password`; default charset `utf8mb4`.
 - `ssl_mode` and `ssl_ca` in `databases.cfg` (see below).
 
@@ -150,6 +150,7 @@ Layout:
 
 ## Upgrade from v1.0.0
 
+- v1.0.0 worked only because it paired the prebuilt AlliedModders MariaDB Connector/C 3.4.9-sm.5 library (built against OpenSSL 1.1) with Ubuntu 20.04's OpenSSL 1.1.1f. v2.0.0 builds MariaDB Connector/C from source against OpenSSL 3.0.22 and checks every binary for unresolved symbols (`scripts/check-binary.sh`).
 - **v1.0.0 has the race in [SourceMod #1207](https://github.com/alliedmodders/sourcemod/issues/1207).** A synchronous
   `SQL_Query` on the main thread and a threaded query can use the same persistent connection at once. Both can close
   TLS after a read error on a dead connection. v2.0.0 has the upstream locking fix. Replace v1.0.0 binaries.

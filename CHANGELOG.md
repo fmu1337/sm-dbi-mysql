@@ -11,6 +11,7 @@
 - The version string lists the build label, MariaDB Connector/C and OpenSSL. OpenSSL is 3.0.22 (v1.0.0 used 1.1.1f).
 - Each connect logs the TLS cipher, or `tls=off`.
 - The test plugin covers shared and threaded handles, a killed connection, utf8mb4, prepared statements, transactions and the ssl_mode matrix.
+- MariaDB Connector/C 3.4.9 is built from source (upstream commit cc4d78c) against OpenSSL 3.0.22; the prebuilt AlliedModders library is no longer used. The SSL symbol shim is removed.
 - Build inputs are pinned by commit or sha256. CI builds every label on Ubuntu 20.04.
 
 ## 1.0.0

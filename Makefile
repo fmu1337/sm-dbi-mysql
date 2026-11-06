@@ -22,8 +22,7 @@ OBJECTS = \
 	mysql/MyDatabase.cpp \
 	mysql/MyDriver.cpp \
 	mysql/MyStatement.cpp \
-	mysql/MysqlSslConfig.cpp \
-	ssl_compat.cpp
+	mysql/MysqlSslConfig.cpp
 
 CPP = g++
 BIN_DIR = build/$(SM_LABEL)
