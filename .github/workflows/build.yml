@@ -18,7 +18,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Ubuntu 20.04: the glibc that 32-bit CS:S srcds servers run against.
-    container: ubuntu:20.04
+    container:
+      image: ubuntu:20.04
+      # Trial: the 32-bit auth test gets "Can't create TCP/IP socket (38)" (ENOSYS)
+      # under the default seccomp profile. Unconfined is a guess, not yet confirmed.
+      options: --security-opt seccomp=unconfined
     # MySQL 8.4 for the authentication test (caching_sha2_password, TLS and plaintext).
     services:
       mysql:
