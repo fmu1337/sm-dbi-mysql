@@ -19,6 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     # Ubuntu 20.04: the glibc that 32-bit CS:S srcds servers run against.
     container: ubuntu:20.04
+    # MySQL 8.4 for the authentication test (caching_sha2_password, TLS and plaintext).
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-pw
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pci-root-pw"
+          --health-interval 5s --health-timeout 5s --health-retries 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,10 +53,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache
-          key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt') }}
+          key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt', 'scripts/build-label.sh') }}
 
       - name: Build ${{ matrix.label }}
         run: bash scripts/build-label.sh ${{ matrix.label }}
+
+      # A static build that cannot log in is useless: check caching_sha2_password
+      # (TLS and plaintext, first login and cached) against the MySQL 8.4 service.
+      - name: Authentication test ${{ matrix.label }}
+        run: |
+          . ./versions.env
+          bash scripts/auth-test.sh \
+            ".cache/mariadb-${MARIADB_COMMIT}-static-auth-i386" \
+            ".cache/openssl-${OPENSSL_VERSION}-i386" \
+            mysql 3306 ci-root-pw
 
       - uses: actions/upload-artifact@v4
         with:

@@ -78,7 +78,7 @@ fi
 # The prebuilt AlliedModders library was compiled against OpenSSL 1.1 and references
 # its API, so it cannot be linked with 3.0 cleanly. The sm.5 tag only adds a CI
 # workflow on top of upstream v3.4.9; the sources here are upstream v3.4.9.
-MARIADB="$CACHE/mariadb-$MARIADB_COMMIT-i386"
+MARIADB="$CACHE/mariadb-$MARIADB_COMMIT-static-auth-i386"
 if [ ! -f "$MARIADB/lib/libmariadbclient.a" ]; then
 	src="$CACHE/mariadb-src-$MARIADB_COMMIT"
 	fetch_commit "$MARIADB_REPO" "$MARIADB_COMMIT" "$src"
@@ -92,7 +92,10 @@ if [ ! -f "$MARIADB/lib/libmariadbclient.a" ]; then
 		-DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
 		-DOPENSSL_USE_STATIC_LIBS=TRUE \
 		-DWITH_UNIT_TESTS=OFF \
-		-DWITH_MYSQLCOMPAT=OFF
+		-DWITH_MYSQLCOMPAT=OFF \
+		-DWITH_EXTERNAL_ZLIB=ON \
+		-DCLIENT_PLUGIN_CACHING_SHA2_PASSWORD=STATIC \
+		-DCLIENT_PLUGIN_SHA256_PASSWORD=STATIC
 	cmake --build "$src/build" -j"$(nproc)" --target mariadbclient
 
 	# The static client library: libmariadbclientstatic.a in 3.x (libmariadbclient.a in older trees).
