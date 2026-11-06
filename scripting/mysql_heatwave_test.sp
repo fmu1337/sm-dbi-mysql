@@ -1,95 +1,300 @@
+/**
+ * sm-dbi-mysql v2: driver test plugin.
+ *
+ * Commands
+ *   sm_mysql_hw_test          full driver test on the configs below (prints PASS/FAIL).
+ *   sm_mysql_hw_ssl [prefix]  ssl_mode matrix: connects with <prefix>_disabled,
+ *                             <prefix>_preferred, <prefix>_required, <prefix>_verify_ca,
+ *                             <prefix>_verify_identity and prints the outcome and the
+ *                             TLS cipher of each (default prefix: mysql_ssl).
+ *
+ * databases.cfg sections used (see README.md for examples):
+ *   mysql_test_a, mysql_test_b   same server, user, password, database and port, same
+ *                                ssl settings: SQL_Connect() returns one shared
+ *                                persistent connection for both.
+ *   mysql_test_killer            same server and user, database "information_schema":
+ *                                a separate connection, used to KILL the shared one.
+ *
+ * Compile: spcomp mysql_heatwave_test.sp (any SourceMod 1.5 - 1.13 compiler).
+ * Uses only natives that exist in SourceMod 1.5.
+ */
+
 #include <sourcemod>
 
-public Plugin:myinfo =
+#define TEST_TAG "[MYSQL-HW]"
+#define THREADED_QUERIES 40
+#define SYNC_QUERIES 40
+
+public Plugin myinfo =
 {
-	name = "MySQL HeatWave DBI test",
+	name = "sm-dbi-mysql driver test",
 	author = "fmu1337",
-	description = "Acceptance tests for modern dbi.mysql (caching_sha2 / TLS)",
-	version = "1.0.0",
+	description = "Threaded/sync queries on a shared handle, killed connection, utf8mb4, prepared statements, transactions, ssl_mode",
+	version = "2.0.0",
 	url = "https://github.com/fmu1337/sm-dbi-mysql"
 };
 
-new Handle:g_DB = INVALID_HANDLE;
+int g_ThreadedDone;
+int g_ThreadedErrors;
+int g_ThreadedSeen;
+Database g_TestDb;
+int g_Passed;
+int g_Failed;
 
-public OnPluginStart()
+public void OnPluginStart()
 {
-	RegServerCmd("sm_mysql_hw_test", Cmd_Test, "Run HeatWave/MySQL DBI acceptance tests");
+	RegAdminCmd("sm_mysql_hw_test", Cmd_Test, ADMFLAG_RCON, "Run the sm-dbi-mysql driver test");
+	RegAdminCmd("sm_mysql_hw_ssl", Cmd_Ssl, ADMFLAG_RCON, "Connect with each ssl_mode and print the outcome");
 }
 
-public Action:Cmd_Test(args)
+static void Check(bool ok, const char[] name, const char[] fmt = "", any ...)
 {
-	decl String:error[256];
-	g_DB = SQL_Connect("default", true, error, sizeof(error));
-	if (g_DB == INVALID_HANDLE)
+	char detail[192];
+	VFormat(detail, sizeof(detail), fmt, 4);
+	if (ok)
 	{
-		PrintToServer("[mysql_hw_test] Connect failed: %s", error);
-		return Plugin_Handled;
-	}
-	PrintToServer("[mysql_hw_test] Connected OK");
-
-	if (!SQL_FastQuery(g_DB, "CREATE TABLE IF NOT EXISTS sm_hw_test (id INT AUTO_INCREMENT PRIMARY KEY, nick VARCHAR(128) NOT NULL, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP) CHARACTER SET utf8mb4"))
-	{
-		SQL_GetError(g_DB, error, sizeof(error));
-		PrintToServer("[mysql_hw_test] CREATE failed: %s", error);
-		CloseHandle(g_DB);
-		g_DB = INVALID_HANDLE;
-		return Plugin_Handled;
-	}
-
-	decl String:nick[128], String:esc[256], String:query[512];
-	strcopy(nick, sizeof(nick), "Test nick quotes ' \" and utf8");
-	SQL_EscapeString(g_DB, nick, esc, sizeof(esc));
-	Format(query, sizeof(query), "INSERT INTO sm_hw_test (nick) VALUES ('%s')", esc);
-
-	if (!SQL_FastQuery(g_DB, query))
-	{
-		SQL_GetError(g_DB, error, sizeof(error));
-		PrintToServer("[mysql_hw_test] INSERT failed: %s", error);
-		CloseHandle(g_DB);
-		g_DB = INVALID_HANDLE;
-		return Plugin_Handled;
-	}
-	PrintToServer("[mysql_hw_test] insert_id=%d affected=%d", SQL_GetInsertId(g_DB), SQL_GetAffectedRows(g_DB));
-
-	new Handle:rs = SQL_Query(g_DB, "SELECT id, nick FROM sm_hw_test ORDER BY id DESC LIMIT 1");
-	if (rs == INVALID_HANDLE)
-	{
-		SQL_GetError(g_DB, error, sizeof(error));
-		PrintToServer("[mysql_hw_test] SELECT failed: %s", error);
+		g_Passed++;
+		PrintToServer("%s PASS %s %s", TEST_TAG, name, detail);
 	}
 	else
 	{
-		if (SQL_FetchRow(rs))
-		{
-			decl String:got[128];
-			SQL_FetchString(rs, 1, got, sizeof(got));
-			PrintToServer("[mysql_hw_test] row id=%d nick=%s", SQL_FetchInt(rs, 0), got);
-		}
-		CloseHandle(rs);
+		g_Failed++;
+		PrintToServer("%s FAIL %s %s", TEST_TAG, name, detail);
 	}
+}
 
-	SQL_LockDatabase(g_DB);
-	SQL_FastQuery(g_DB, "START TRANSACTION");
-	SQL_FastQuery(g_DB, "UPDATE sm_hw_test SET nick=CONCAT(nick,'_tx') ORDER BY id DESC LIMIT 1");
-	SQL_FastQuery(g_DB, "COMMIT");
-	SQL_UnlockDatabase(g_DB);
-	PrintToServer("[mysql_hw_test] transaction OK");
+/* ------------------------------------------------------------------------ */
+/* Full test                                                                */
+/* ------------------------------------------------------------------------ */
 
-	new i;
-	for (i = 0; i < 1000; i++)
+public Action Cmd_Test(int args)
+{
+	g_Passed = 0;
+	g_Failed = 0;
+	char error[256];
+
+	Database a = SQL_Connect("mysql_test_a", true, error, sizeof(error));
+	if (a == null)
 	{
-		if (!SQL_FastQuery(g_DB, "SELECT 1"))
+		PrintToServer("%s cannot connect mysql_test_a: %s", TEST_TAG, error);
+		return Plugin_Handled;
+	}
+	Database b = SQL_Connect("mysql_test_b", true, error, sizeof(error));
+	if (b == null)
+	{
+		PrintToServer("%s cannot connect mysql_test_b: %s", TEST_TAG, error);
+		delete a;
+		return Plugin_Handled;
+	}
+	g_TestDb = a;
+
+	/* Shared persistent connection: both configs report the same CONNECTION_ID(). */
+	int idA = ConnectionId(a);
+	int idB = ConnectionId(b);
+	Check(idA > 0 && idA == idB, "shared_handle", "(ids a=%d b=%d)", idA, idB);
+
+	/* Synchronous queries on the main thread, interleaved with threaded queries on the same handle. */
+	g_ThreadedDone = 0;
+	g_ThreadedErrors = 0;
+	g_ThreadedSeen = 0;
+	for (int i = 0; i < THREADED_QUERIES; i++)
+	{
+		SQL_TQuery(a, OnThreadedQuery, "SELECT SLEEP(0.01), 1", i);
+	}
+
+	int syncErrors = 0;
+	for (int i = 0; i < SYNC_QUERIES; i++)
+	{
+		DBResultSet rs = SQL_Query(a, "SELECT 1");
+		if (rs == null)
 		{
-			SQL_GetError(g_DB, error, sizeof(error));
-			PrintToServer("[mysql_hw_test] burst fail at %d: %s", i, error);
-			break;
+			syncErrors++;
+		}
+		else
+		{
+			delete rs;
 		}
 	}
-	if (i == 1000)
-		PrintToServer("[mysql_hw_test] 1000 queries OK");
+	Check(syncErrors == 0, "sync_queries_during_threaded", "(errors=%d)", syncErrors);
 
-	CloseHandle(g_DB);
-	g_DB = INVALID_HANDLE;
-	PrintToServer("[mysql_hw_test] done");
+	/* Killed connection: another session kills the shared one; the next query on the
+	 * same handle must not crash and must either reconnect or fail with a message. */
+	Database killer = SQL_Connect("mysql_test_killer", true, error, sizeof(error));
+	if (killer != null)
+	{
+		char query[64];
+		Format(query, sizeof(query), "KILL CONNECTION %d", idA);
+		SQL_FastQuery(killer, query);
+		delete killer;
+	}
+	else
+	{
+		PrintToServer("%s note: mysql_test_killer unavailable (%s); kill case skipped", TEST_TAG, error);
+	}
+	DBResultSet afterKill = SQL_Query(a, "SELECT 1");
+	bool afterKillOk = (afterKill != null);
+	if (afterKill != null)
+	{
+		delete afterKill;
+	}
+	int idAfter = ConnectionId(a);
+	Check(afterKillOk || idAfter > 0, "killed_connection_no_crash", "(ok=%d new_id=%d)", afterKillOk, idAfter);
+
+	/* utf8mb4 round trip through a temporary table. */
+	SQL_FastQuery(a, "CREATE TEMPORARY TABLE IF NOT EXISTS sm_hw_utf8 (id INT, s VARCHAR(64) CHARACTER SET utf8mb4) CHARACTER SET utf8mb4");
+	char utf[] = "emoji 😀 ñ 中";
+	char read[128];
+	char err[256];
+	DBStatement st = SQL_PrepareQuery(a, "INSERT INTO sm_hw_utf8 (id, s) VALUES (?, ?)", err, sizeof(err));
+	if (st != null)
+	{
+		SQL_BindParamInt(st, 0, 1);
+		SQL_BindParamString(st, 1, utf, false);
+		Check(SQL_Execute(st), "prepared_insert_utf8mb4");
+		delete st;
+	}
+	else
+	{
+		Check(false, "prepared_insert_utf8mb4", err);
+	}
+	DBResultSet rs = SQL_Query(a, "SELECT s FROM sm_hw_utf8 WHERE id = 1");
+	if (rs != null && rs.FetchRow())
+	{
+		rs.FetchString(0, read, sizeof(read));
+		Check(StrEqual(read, utf), "utf8mb4_round_trip", read);
+	}
+	else
+	{
+		Check(false, "utf8mb4_round_trip", "(no row)");
+	}
+	delete rs;
+
+	/* Prepared SELECT with a bound string and an int, fetched back. */
+	st = SQL_PrepareQuery(a, "SELECT id, s FROM sm_hw_utf8 WHERE id = ? AND s = ?", err, sizeof(err));
+	if (st != null)
+	{
+		SQL_BindParamInt(st, 0, 1);
+		SQL_BindParamString(st, 1, utf, false);
+		bool ok = SQL_Execute(st) && SQL_FetchRow(st);
+		Check(ok && SQL_FetchInt(st, 0) == 1, "prepared_select");
+		delete st;
+	}
+	else
+	{
+		Check(false, "prepared_select", err);
+	}
+
+	/* Transactions: rollback leaves no row; commit keeps it. */
+	SQL_FastQuery(a, "CREATE TEMPORARY TABLE IF NOT EXISTS sm_hw_txn (id INT)");
+	SQL_FastQuery(a, "START TRANSACTION");
+	SQL_FastQuery(a, "INSERT INTO sm_hw_txn VALUES (1)");
+	SQL_FastQuery(a, "ROLLBACK");
+	rs = SQL_Query(a, "SELECT COUNT(*) FROM sm_hw_txn");
+	int rolledBack = (rs != null && rs.FetchRow()) ? rs.FetchInt(0) : -1;
+	delete rs;
+	Check(rolledBack == 0, "transaction_rollback", "(rows=%d)", rolledBack);
+
+	SQL_FastQuery(a, "START TRANSACTION");
+	SQL_FastQuery(a, "INSERT INTO sm_hw_txn VALUES (2)");
+	SQL_FastQuery(a, "COMMIT");
+	rs = SQL_Query(a, "SELECT COUNT(*) FROM sm_hw_txn");
+	int committed = (rs != null && rs.FetchRow()) ? rs.FetchInt(0) : -1;
+	delete rs;
+	Check(committed == 1, "transaction_commit", "(rows=%d)", committed);
+
+	/* Threaded results: wait for the callbacks (up to 30 s) before the summary. */
+	CreateTimer(0.2, Timer_WaitThreaded, a, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	return Plugin_Handled;
+}
+
+public Action Timer_WaitThreaded(Handle timer, any data)
+{
+	static int ticks;
+	ticks++;
+	if (g_ThreadedDone < THREADED_QUERIES && ticks < 150)
+	{
+		return Plugin_Continue;
+	}
+
+	ticks = 0;
+	Check(g_ThreadedDone == THREADED_QUERIES && g_ThreadedErrors == 0,
+		"threaded_queries_on_shared_handle",
+		"(done=%d errors=%d)", g_ThreadedDone, g_ThreadedErrors);
+
+	delete g_TestDb;
+	g_TestDb = null;
+	PrintToServer("%s SUMMARY passed=%d failed=%d", TEST_TAG, g_Passed, g_Failed);
+	return Plugin_Stop;
+}
+
+public void OnThreadedQuery(Database db, DBResultSet results, const char[] error, any data)
+{
+	g_ThreadedDone++;
+	if (results == null)
+	{
+		g_ThreadedErrors++;
+		if (g_ThreadedErrors == 1)
+		{
+			PrintToServer("%s threaded error: %s", TEST_TAG, error);
+		}
+	}
+	else
+	{
+		g_ThreadedSeen++;
+	}
+}
+
+static int ConnectionId(Database db)
+{
+	DBResultSet rs = SQL_Query(db, "SELECT CONNECTION_ID()");
+	int id = -1;
+	if (rs != null && rs.FetchRow())
+	{
+		id = rs.FetchInt(0);
+	}
+	delete rs;
+	return id;
+}
+
+/* ------------------------------------------------------------------------ */
+/* ssl_mode matrix                                                          */
+/* ------------------------------------------------------------------------ */
+
+static void SslProbe(const char[] prefix, const char[] mode)
+{
+	char name[96], error[256];
+	Format(name, sizeof(name), "%s_%s", prefix, mode);
+
+	Database db = SQL_Connect(name, true, error, sizeof(error));
+	if (db == null)
+	{
+		PrintToServer("%s ssl_mode=%s config=%s result=FAIL error=\"%s\"", TEST_TAG, mode, name, error);
+		return;
+	}
+
+	char cipher[128] = "";
+	DBResultSet rs = SQL_Query(db, "SHOW STATUS LIKE 'Ssl_cipher'");
+	if (rs != null && rs.FetchRow())
+	{
+		rs.FetchString(1, cipher, sizeof(cipher));
+	}
+	delete rs;
+	PrintToServer("%s ssl_mode=%s config=%s result=OK cipher=\"%s\"", TEST_TAG, mode, name, cipher);
+	delete db;
+}
+
+public Action Cmd_Ssl(int args)
+{
+	char prefix[64] = "mysql_ssl";
+	if (args >= 1)
+	{
+		GetCmdArg(1, prefix, sizeof(prefix));
+	}
+
+	SslProbe(prefix, "disabled");
+	SslProbe(prefix, "preferred");
+	SslProbe(prefix, "required");
+	SslProbe(prefix, "verify_ca");
+	SslProbe(prefix, "verify_identity");
 	return Plugin_Handled;
 }

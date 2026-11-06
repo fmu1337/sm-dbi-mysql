@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
-# Assemble build tree: SMSDK mysql sources + our overlay.
+# Assemble the build tree work/: pinned upstream sources (vendor/) + this project's
+# overlay/ (overlay wins), plus the SDK's smsdk_ext.cpp for the chosen SourceMod.
+#
+#   SMSDK=/path/to/sourcemod OUT=work ./scripts/prepare.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SMSDK="${SMSDK:?set SMSDK to SourceMod checkout}"
+SMSDK="${SMSDK:?set SMSDK to a SourceMod SDK checkout}"
 OUT="${OUT:-$ROOT/work}"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/sdk" "$OUT/mysql"
 
-cp -a "$SMSDK/extensions/mysql/mysql/"*.cpp "$SMSDK/extensions/mysql/mysql/"*.h "$OUT/mysql/"
-cp -a "$SMSDK/extensions/mysql/extension.h" "$OUT/" 2>/dev/null || true
-cp -a "$SMSDK/public/smsdk_ext.cpp" "$OUT/sdk/smsdk_ext.cpp"
+# 1. Pinned upstream extensions/mysql (see vendor/VENDOR.md).
+cp -a "$ROOT/vendor/sourcemod-mysql/." "$OUT/"
 
-# Overlay HeatWave / MariaDB patches
-cp -a "$ROOT/overlay/extension.cpp" "$OUT/extension.cpp"
-cp -a "$ROOT/overlay/extension.h" "$OUT/extension.h"
-cp -a "$ROOT/overlay/smsdk_config.h" "$OUT/smsdk_config.h"
-cp -a "$ROOT/overlay/mysql/MyDriver.cpp" "$OUT/mysql/MyDriver.cpp"
-cp -a "$ROOT/overlay/mysql/MyDriver.h" "$OUT/mysql/MyDriver.h"
-cp -a "$ROOT/overlay/mysql/MysqlSslConfig.cpp" "$OUT/mysql/MysqlSslConfig.cpp"
-cp -a "$ROOT/overlay/mysql/MysqlSslConfig.h" "$OUT/mysql/MysqlSslConfig.h"
+# 2. This project's changes; each file replaces the vendored one of the same name.
+cp -a "$ROOT/overlay/." "$OUT/"
+
+# 3. The SDK's own extension glue (SDK version differs per label).
+cp -a "$SMSDK/public/smsdk_ext.cpp" "$OUT/sdk/smsdk_ext.cpp"
 
 cp -a "$ROOT/Makefile" "$OUT/Makefile"
 cp -a "$ROOT/exports.map" "$OUT/exports.map"
 
-# Ensure smsdk_config is picked up from local dir (smsdk_ext.h includes it)
-# Older trees expect smsdk_config.h next to extension sources.
 echo "Prepared $OUT from SMSDK=$SMSDK"

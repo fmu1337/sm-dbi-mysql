@@ -1,10 +1,15 @@
-# (C) AlliedModders / fmu1337
-# Build dbi.mysql.ext.so (32-bit) against SMSDK + MariaDB Connector/C
+# sm-dbi-mysql v2: build dbi.mysql.ext.so (32-bit Linux) against one SourceMod SDK.
+#
+# Use scripts/prepare.sh first: it assembles work/ from vendor/ (pinned upstream
+# extensions/mysql) and overlay/ (this project's changes). Do not build from vendor/.
+#
+#   make -C work SMSDK=... MMSOURCE=... MARIADB=... OPENSSL=... SM_LABEL=sm17
 
-SMSDK       ?= ../sourcemod
-MMSOURCE    ?= ../mmsource
-MARIADB     ?= ../mariadb-connector-c-3.4.9-x86
-SM_LABEL    ?= sm17
+SMSDK     ?= ../sourcemod
+MMSOURCE  ?= ../mmsource
+MARIADB   ?= ../mariadb-connector-c-3.4.9-x86
+OPENSSL   ?= ../openssl-3.0.22-install
+SM_LABEL  ?= sm17
 
 PROJECT = dbi.mysql
 BINARY  = $(PROJECT).ext.so
@@ -27,7 +32,8 @@ CFLAGS = -D_LINUX -Dstricmp=strcasecmp -D_stricmp=strcasecmp -D_strnicmp=strncas
 	-Dstrnicmp=strncasecmp -D_snprintf=snprintf -D_vsnprintf=vsnprintf -D_alloca=alloca \
 	-Dstrcmpi=strcasecmp -Wall -Wno-unused-parameter -Wno-switch -Wno-unknown-pragmas \
 	-mfpmath=sse -msse -DSOURCEMOD_BUILD -DHAVE_STDINT_H -m32 \
-	-fvisibility=hidden -fPIC
+	-fvisibility=hidden -fPIC \
+	-DSM_DBI_LABEL=\"$(SM_LABEL)\"
 CPPFLAGS = -Wno-non-virtual-dtor -fno-exceptions -fno-rtti -fvisibility-inlines-hidden -std=c++17
 
 INCLUDE = -I. -Isdk \
@@ -37,14 +43,17 @@ INCLUDE = -I. -Isdk \
 	-I$(SMSDK)/public/amtl \
 	-I$(SMSDK)/public/amtl/amtl \
 	-I$(MMSOURCE)/core/sourcehook \
-	-I$(MARIADB)/include/mariadb
+	-I$(MARIADB)/include/mariadb \
+	-I$(OPENSSL)/include
 
+# Static everything except glibc: MariaDB C/C 3.4.9 (LGPL-2.1) and OpenSSL 3.0 (Apache-2.0).
+# Only GetSMExtAPI is exported (exports.map).
 LINK = -m32 -shared -static-libgcc \
 	-Wl,--version-script=exports.map \
 	-Wl,-Bsymbolic \
 	$(MARIADB)/lib/libmariadbclient.a \
-	-Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic \
-	-lz -lpthread -lrt -ldl -lm -lstdc++
+	$(OPENSSL)/lib/libssl.a $(OPENSSL)/lib/libcrypto.a \
+	-lz -lpthread -lrt -ldl -lm
 
 OBJ_FILES := $(OBJECTS:%.cpp=$(BIN_DIR)/%.o)
 
@@ -61,7 +70,6 @@ $(BIN_DIR)/%.o: %.cpp
 extension: $(OBJ_FILES)
 	$(CPP) $(OBJ_FILES) $(LINK) -o $(BIN_DIR)/$(BINARY)
 	@echo "Built $(BIN_DIR)/$(BINARY)"
-	@ldd $(BIN_DIR)/$(BINARY) || true
 
 clean:
 	rm -rf build

@@ -1,13 +1,39 @@
 /**
- * SourceMod MySQL Extension — Connect() with TLS / utf8mb4 / MariaDB Connector/C.
+ * vim: set ts=4 sw=4 tw=99 noet :
+ * =============================================================================
+ * SourceMod MySQL Extension
+ * Copyright (C) 2004-2008 AlliedModders LLC.  All rights reserved.
+ * =============================================================================
+ *
+ * This program is free software; you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License, version 3.0, as published by the
+ * Free Software Foundation.
+ * 
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * As a special exception, AlliedModders LLC gives you permission to link the
+ * code of this program (as well as its derivative works) to "Half-Life 2," the
+ * "Source Engine," the "SourcePawn JIT," and any Game MODs that run on software
+ * by the Valve Corporation.  You must obey the GNU General Public License in
+ * all respects for all other code used.  Additionally, AlliedModders LLC grants
+ * this exception to all derivative works.  AlliedModders LLC defines further
+ * exceptions, found in LICENSE.txt (as of this writing, version JULY-31-2007),
+ * or <http://www.sourcemod.net/license.php>.
+ *
+ * Version: $Id$
  */
 
 #include "MyDriver.h"
 #include "MyDatabase.h"
 #include "MysqlSslConfig.h"
 #include "smsdk_ext.h"
-#include <stdio.h>
-#include <string.h>
+#include "am-string.h"
 
 MyDriver g_MyDriver;
 
@@ -19,11 +45,12 @@ MyDriver::MyDriver()
 void CloseDBList(List<MyDatabase *> &l)
 {
 	List<MyDatabase *>::iterator iter;
-	for (iter = l.begin(); iter != l.end(); iter++)
+	for (iter=l.begin(); iter!=l.end(); iter++)
 	{
 		MyDatabase *db = (*iter);
 		while (!db->Close())
 		{
+			/* Spool until it closes  */
 		}
 	}
 	l.clear();
@@ -31,6 +58,7 @@ void CloseDBList(List<MyDatabase *> &l)
 
 void MyDriver::Shutdown()
 {
+	List<MyDatabase *>::iterator iter;
 	CloseDBList(m_PermDbs);
 
 	if (m_MyHandle != BAD_HANDLE)
@@ -51,6 +79,7 @@ Handle_t MyDriver::GetHandle()
 	{
 		m_MyHandle = dbi->CreateHandle(DBHandle_Driver, this, myself->GetIdentity());
 	}
+
 	return m_MyHandle;
 }
 
@@ -64,12 +93,12 @@ const char *MyDriver::GetProductName()
 	return "MySQL";
 }
 
-MYSQL *Connect(const DatabaseInfo *info, char *error, size_t maxlength)
+MYSQL *Connect(const DatabaseInfo *info, const MysqlSslSettings &ssl, char *error, size_t maxlength)
 {
 	MYSQL *mysql = mysql_init(NULL);
 	const char *host = NULL, *socket = NULL;
 
-	unsigned int timeout = 60;
+	decltype(info->maxTimeout) timeout = 60;
 	if (info->maxTimeout > 0)
 	{
 		timeout = info->maxTimeout;
@@ -79,16 +108,17 @@ MYSQL *Connect(const DatabaseInfo *info, char *error, size_t maxlength)
 	mysql_options(mysql, MYSQL_OPT_READ_TIMEOUT, (const char *)&timeout);
 	mysql_options(mysql, MYSQL_OPT_WRITE_TIMEOUT, (const char *)&timeout);
 
-	MysqlSslOptions ssl;
-	g_MysqlSslConfig.Lookup(info, &ssl);
-	ApplyMysqlSslOptions(mysql, &ssl);
+	/* ssl_mode / ssl_ca (MysqlSslConfig.cpp). With disabled no TLS option is set. */
+	MysqlSslApply(mysql, ssl);
 
-	/* MYSQL_OPT_RECONNECT still present in MariaDB Connector/C. */
+	/* utf8mb4 in the handshake; plugins may still change it with SQL_SetCharset. */
+	mysql_options(mysql, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+
+	/* Have MySQL automatically reconnect if it times out or loses connection.
+	 * This will prevent "MySQL server has gone away" errors after a while.
+	 */
 	my_bool my_true = true;
 	mysql_options(mysql, MYSQL_OPT_RECONNECT, (const char *)&my_true);
-
-	/* Default charset; plugins may still SET NAMES afterwards. */
-	mysql_options(mysql, MYSQL_SET_CHARSET_NAME, "utf8mb4");
 
 	if (info->host[0] == '/')
 	{
@@ -103,34 +133,23 @@ MYSQL *Connect(const DatabaseInfo *info, char *error, size_t maxlength)
 
 	if (!mysql_real_connect(mysql,
 		host,
-		info->user,
+		info->user, 
 		info->pass,
 		info->database,
 		info->port,
 		socket,
 		M_CLIENT_MULTI_RESULTS))
 	{
-		snprintf(error, maxlength, "[%d]: %s", mysql_errno(mysql), mysql_error(mysql));
+		/* :TODO: expose UTIL_Format from smutil! */
+		ke::SafeSprintf(error, maxlength, "[%d]: %s", mysql_errno(mysql), mysql_error(mysql));
 		mysql_close(mysql);
 		return NULL;
 	}
 
-	if (ssl.mode == MysqlSsl_Required
-		|| ssl.mode == MysqlSsl_VerifyCA
-		|| ssl.mode == MysqlSsl_VerifyIdentity)
+	if (!MysqlSslVerifySession(mysql, ssl, error, maxlength))
 	{
-		if (mysql_get_ssl_cipher(mysql) == NULL)
-		{
-			snprintf(error, maxlength, "[0]: TLS required but connection is not encrypted");
-			mysql_close(mysql);
-			return NULL;
-		}
-	}
-
-	/* Ensure utf8mb4 even if server ignored MYSQL_SET_CHARSET_NAME. */
-	if (mysql_set_character_set(mysql, "utf8mb4") != 0)
-	{
-		/* Non-fatal: keep connection; plugin SET NAMES may still work. */
+		mysql_close(mysql);
+		return NULL;
 	}
 
 	return mysql;
@@ -138,21 +157,38 @@ MYSQL *Connect(const DatabaseInfo *info, char *error, size_t maxlength)
 
 bool CompareField(const char *str1, const char *str2)
 {
-	if ((str1 == NULL && str2 != NULL) || (str1 != NULL && str2 == NULL))
+	if ((str1 == NULL && str2 != NULL)
+		|| (str1 != NULL && str2 == NULL))
+	{
 		return false;
+	}
+
 	if (str1 == NULL && str2 == NULL)
+	{
 		return true;
+	}
+
 	return (strcmp(str1, str2) == 0);
 }
 
 IDatabase *MyDriver::Connect(const DatabaseInfo *info, bool persistent, char *error, size_t maxlength)
 {
+	/* ssl_mode / ssl_ca first: a bad value fails every connect with a message. */
+	MysqlSslSettings ssl;
+	if (!MysqlSslLookup(info, &ssl, error, maxlength))
+	{
+		return NULL;
+	}
+
 	std::lock_guard<std::mutex> lock(m_Lock);
 
 	if (persistent)
 	{
+		/* Try to find a matching persistent connection */
 		List<MyDatabase *>::iterator iter;
-		for (iter = m_PermDbs.begin(); iter != m_PermDbs.end(); iter++)
+		for (iter=m_PermDbs.begin();
+			 iter!=m_PermDbs.end();
+			 iter++)
 		{
 			MyDatabase *db = (*iter);
 			const DatabaseInfo &other = db->GetInfo();
@@ -160,7 +196,8 @@ IDatabase *MyDriver::Connect(const DatabaseInfo *info, bool persistent, char *er
 				&& CompareField(info->user, other.user)
 				&& CompareField(info->pass, other.pass)
 				&& CompareField(info->database, other.database)
-				&& (info->port == other.port))
+				&& (info->port == other.port)
+				&& db->HasSslSettings(ssl))
 			{
 				db->IncReferenceCount();
 				return db;
@@ -168,13 +205,25 @@ IDatabase *MyDriver::Connect(const DatabaseInfo *info, bool persistent, char *er
 		}
 	}
 
-	MYSQL *mysql = ::Connect(info, error, maxlength);
+	MYSQL *mysql = ::Connect(info, ssl, error, maxlength);
 	if (!mysql)
+	{
 		return NULL;
+	}
 
-	MyDatabase *db = new MyDatabase(mysql, info, persistent);
+	char tls[256];
+	MysqlSslDescribe(mysql, tls, sizeof(tls));
+	smutils->LogMessage(myself, "connected host=%s db=%s ssl_mode=%s %s",
+		info->host ? info->host : "", info->database ? info->database : "",
+		MysqlSslModeName(ssl.mode), tls);
+
+	MyDatabase *db = new MyDatabase(mysql, info, ssl, persistent);
+
 	if (persistent)
+	{
 		m_PermDbs.push_back(db);
+	}
+	
 	return db;
 }
 
@@ -182,7 +231,9 @@ void MyDriver::RemoveFromList(MyDatabase *pdb, bool persistent)
 {
 	std::lock_guard<std::mutex> lock(m_Lock);
 	if (persistent)
+	{
 		m_PermDbs.remove(pdb);
+	}
 }
 
 bool MyDriver::IsThreadSafe()
@@ -203,10 +254,16 @@ void MyDriver::ShutdownThreadSafety()
 size_t strncopy(char *dest, const char *src, size_t count)
 {
 	if (!count)
+	{
 		return 0;
+	}
+
 	char *start = dest;
 	while ((*src) && (--count))
+	{
 		*dest++ = *src++;
+	}
 	*dest = '\0';
-	return (size_t)(dest - start);
+
+	return (dest - start);
 }

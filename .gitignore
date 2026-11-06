@@ -1,10 +1,8 @@
-work/
 build/
+work/
+work-*/
+work*/
 dist/
-*.o
+.cache/
 *.so
-*.sha256
-.sdk/
-*.tar.gz
-*.zip
-.DS_Store
+*.smx

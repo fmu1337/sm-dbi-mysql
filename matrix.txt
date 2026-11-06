@@ -1,0 +1,10 @@
+# label  sourcemod  sdk_commit (pinned)                       dbi  ref
+sm15     1.5.3      7ecdfae3edf5455beef469694b7a6caf7b7344cc  9    tag sourcemod-1.5.3
+sm16     1.6.3      34b5caf4645cab660feb9a90468877e1080dea52  9    tag sourcemod-1.6.3
+sm17     1.7.2      255e2ef6f0f7a78a1b5baeb007b49e904e6f143a  9    tag sourcemod-1.7.2
+sm18     1.8        b580076cac8258e906f876e98a19b5c5456f0ef1  9    1.8-dev head, 2026-11-06
+sm19     1.9        3c948997e0240927a9b3b9ee52f877249ae9a274  9    1.9-dev head, 2026-11-06
+sm110    1.10       b53803203a92086a2926e8792accd3c7181e184b  9    1.10-dev head, 2026-11-06
+sm111    1.11       f53cb134ef83b580c83e1f4bf35f60d11c4571dd  9    1.11-dev head, 2026-11-06
+sm112    1.12       3f7460671f7adc4a3c6791a47d21ba3e7b5fba91  9    tag 1.12.0.7260 (= 1.12-dev head)
+sm113    1.13       b34de51b8c7f92fc2a7242fc0195e2d64a69cefd  10   upstream pin (no ssl_mode in stock)
