@@ -23,7 +23,7 @@ cp -a "$ROOT/overlay/." "$OUT/"
 if [ -f "$SMSDK/public/smsdk_ext.cpp" ]; then
   glue="$SMSDK/public"
 else
-  glue="$(dirname "$(ls "$SMSDK"/extensions/*/sdk/smsdk_ext.cpp | head -1)")"
+  glue="$SMSDK/extensions/bintools/sdk"
 fi
 # SourceMod 1.5 glue defines ITextParsers *textparsers twice (under the same #if); keep the first.
 awk -f "$ROOT/scripts/dedupe-glue.awk" "$glue/smsdk_ext.cpp" > "$OUT/sdk/smsdk_ext.cpp"
