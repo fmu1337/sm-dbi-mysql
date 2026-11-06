@@ -33,6 +33,9 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git make perl \
             gcc g++ gcc-multilib g++-multilib binutils
+          dpkg --add-architecture i386
+          apt-get update
+          apt-get install -y --no-install-recommends zlib1g-dev:i386
 
       - uses: actions/checkout@v4
 

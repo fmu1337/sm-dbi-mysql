@@ -19,7 +19,13 @@ cp -a "$ROOT/vendor/sourcemod-mysql/." "$OUT/"
 cp -a "$ROOT/overlay/." "$OUT/"
 
 # 3. The SDK's own extension glue (SDK version differs per label).
-cp -a "$SMSDK/public/smsdk_ext.cpp" "$OUT/sdk/smsdk_ext.cpp"
+# SourceMod 1.6+ ships public/smsdk_ext.{cpp,h}; 1.5 keeps them in an extension.
+if [ -f "$SMSDK/public/smsdk_ext.cpp" ]; then
+  glue="$SMSDK/public"
+else
+  glue="$(dirname "$(ls "$SMSDK"/extensions/*/sdk/smsdk_ext.cpp | head -1)")"
+fi
+cp -a "$glue/smsdk_ext.cpp" "$glue/smsdk_ext.h" "$OUT/sdk/"
 
 cp -a "$ROOT/Makefile" "$OUT/Makefile"
 cp -a "$ROOT/exports.map" "$OUT/exports.map"

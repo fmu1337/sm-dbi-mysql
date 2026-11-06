@@ -55,6 +55,11 @@ LINK = -m32 -shared -static-libgcc \
 	$(OPENSSL)/lib/libssl.a $(OPENSSL)/lib/libcrypto.a \
 	-lz -lpthread -lrt -ldl -lm
 
+# SourceMod 1.5 - 1.7 SDKs predate ke::RefPtr and ke::SafeSprintf (see overlay/amtl_compat.h).
+ifneq (,$(filter sm15 sm16 sm17,$(SM_LABEL)))
+CPPFLAGS += -include $(CURDIR)/amtl_compat.h
+endif
+
 OBJ_FILES := $(OBJECTS:%.cpp=$(BIN_DIR)/%.o)
 
 .PHONY: all clean dirs extension
