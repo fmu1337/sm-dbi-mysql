@@ -93,7 +93,7 @@ if [ ! -f "$MARIADB/lib/libmariadbclient.a" ]; then
 		-DOPENSSL_USE_STATIC_LIBS=TRUE \
 		-DWITH_UNIT_TESTS=OFF \
 		-DWITH_MYSQLCOMPAT=OFF
-	cmake --build "$src/build" -j"$(nproc)"
+	cmake --build "$src/build" -j"$(nproc)" --target mariadbclient
 
 	# The static client library: libmariadbclientstatic.a in 3.x (libmariadbclient.a in older trees).
 	static_lib="$(find "$src/build" -name 'libmariadbclientstatic.a' | head -1)"
