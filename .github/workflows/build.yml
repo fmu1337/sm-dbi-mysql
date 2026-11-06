@@ -68,11 +68,16 @@ jobs:
             if getent hosts mysql >/dev/null; then break; fi
             sleep 2
           done
-          getent hosts mysql || { echo "service host 'mysql' does not resolve"; cat /etc/hosts; exit 1; }
+          # The 32-bit test binary cannot resolve the name itself (MariaDB reports
+          # "Unknown server host" although getent works in the 64-bit shell), so it
+          # gets the address resolved here.
+          ip="$(getent hosts mysql | awk '{print $1; exit}')"
+          if [ -z "$ip" ]; then echo "service host 'mysql' does not resolve"; cat /etc/hosts; exit 1; fi
+          echo "MySQL service at $ip"
           bash scripts/auth-test.sh \
             ".cache/mariadb-${MARIADB_COMMIT}-static-auth-i386" \
             ".cache/openssl-${OPENSSL_VERSION}-i386" \
-            mysql 3306 ci-root-pw
+            "$ip" 3306 ci-root-pw
 
       - uses: actions/upload-artifact@v4
         with:
