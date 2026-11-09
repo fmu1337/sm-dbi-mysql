@@ -34,6 +34,7 @@ public Plugin myinfo =
 	url = "https://github.com/fmu1337/sm-dbi-mysql"
 };
 
+int g_IdA;
 int g_ThreadedDone;
 int g_ThreadedErrors;
 int g_ThreadedSeen;
@@ -117,28 +118,9 @@ public Action Cmd_Test(int client, int args)
 	}
 	Check(syncErrors == 0, "sync_queries_during_threaded", "(errors=%d)", syncErrors);
 
-	/* Killed connection: another session kills the shared one; the next query on the
-	 * same handle must not crash and must either reconnect or fail with a message. */
-	Database killer = SQL_Connect("mysql_test_killer", true, error, sizeof(error));
-	if (killer != null)
-	{
-		char query[64];
-		Format(query, sizeof(query), "KILL CONNECTION %d", idA);
-		SQL_FastQuery(killer, query);
-		delete killer;
-	}
-	else
-	{
-		PrintToServer("%s note: mysql_test_killer unavailable (%s); kill case skipped", TEST_TAG, error);
-	}
-	DBResultSet afterKill = SQL_Query(a, "SELECT 1");
-	bool afterKillOk = (afterKill != null);
-	if (afterKill != null)
-	{
-		delete afterKill;
-	}
-	int idAfter = ConnectionId(a);
-	Check(afterKillOk || idAfter > 0, "killed_connection_no_crash", "(ok=%d new_id=%d)", afterKillOk, idAfter);
+	/* The killed-connection case runs in Timer_WaitThreaded, after every threaded query has
+	 * finished, so no query is in flight when the connection is killed. */
+	g_IdA = idA;
 
 	/* utf8mb4 round trip through a temporary table. */
 	SQL_FastQuery(a, "CREATE TEMPORARY TABLE IF NOT EXISTS sm_hw_utf8 (id INT, s VARCHAR(64) CHARACTER SET utf8mb4) CHARACTER SET utf8mb4");
@@ -207,6 +189,29 @@ public Action Cmd_Test(int client, int args)
 	return Plugin_Handled;
 }
 
+/* Another session kills the shared connection; the next query on the same handle must not
+ * crash and must either reconnect or fail with a message. Runs with no query in flight. */
+static void KillCase(Database a, int idA)
+{
+	char error[256];
+	Database killer = SQL_Connect("mysql_test_killer", true, error, sizeof(error));
+	if (killer == null)
+	{
+		PrintToServer("%s note: mysql_test_killer unavailable (%s); kill case skipped", TEST_TAG, error);
+		return;
+	}
+	char query[64];
+	Format(query, sizeof(query), "KILL CONNECTION %d", idA);
+	SQL_FastQuery(killer, query);
+	delete killer;
+
+	DBResultSet afterKill = SQL_Query(a, "SELECT 1");
+	bool afterKillOk = (afterKill != null);
+	delete afterKill;
+	int idAfter = ConnectionId(a);
+	Check(afterKillOk || idAfter > 0, "killed_connection_no_crash", "(ok=%d new_id=%d)", afterKillOk, idAfter);
+}
+
 public Action Timer_WaitThreaded(Handle timer, any data)
 {
 	static int ticks;
@@ -217,9 +222,15 @@ public Action Timer_WaitThreaded(Handle timer, any data)
 	}
 
 	ticks = 0;
+	/* Every callback has run (or the wait timed out): no query is in flight now. */
 	Check(g_ThreadedDone == THREADED_QUERIES && g_ThreadedErrors == 0,
 		"threaded_queries_on_shared_handle",
 		"(done=%d errors=%d)", g_ThreadedDone, g_ThreadedErrors);
+
+	if (g_ThreadedDone == THREADED_QUERIES)
+	{
+		KillCase(g_TestDb, g_IdA);
+	}
 
 	delete g_TestDb;
 	g_TestDb = null;
