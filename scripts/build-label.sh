@@ -59,7 +59,7 @@ fetch_commit "$MMSOURCE_REPO" "$MMSOURCE_COMMIT" "$MMSOURCE"
 OPENSSL_PREFIX="$CACHE/openssl-$OPENSSL_VERSION-i386"
 if [ ! -f "$OPENSSL_PREFIX/lib/libcrypto.a" ]; then
 	tarball="$CACHE/openssl-$OPENSSL_VERSION.tar.gz"
-	[ -f "$tarball" ] || curl -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o "$tarball" "$OPENSSL_URL"
+	[ -f "$tarball" ] || curl -fsSL --retry 5 --retry-delay 15 -o "$tarball" "$OPENSSL_URL"
 	verify_sha256 "$tarball" "$OPENSSL_SHA256"
 	src="$CACHE/openssl-src-$OPENSSL_VERSION-i386"
 	rm -rf "$src"

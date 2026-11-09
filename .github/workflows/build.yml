@@ -98,10 +98,10 @@ jobs:
         run: |
           set -euo pipefail
           . ./versions.env
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o sm113.tar.gz "$SPCOMP_DROP_URL"
+          curl -fsSL --retry 5 --retry-delay 15 -o sm113.tar.gz "$SPCOMP_DROP_URL"
           echo "$SPCOMP_DROP_SHA256  sm113.tar.gz" | sha256sum -c -
           mkdir -p sm113 && tar -xzf sm113.tar.gz -C sm113
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o sm17.tar.gz "$SPCOMP17_DROP_URL"
+          curl -fsSL --retry 5 --retry-delay 15 -o sm17.tar.gz "$SPCOMP17_DROP_URL"
           echo "$SPCOMP17_DROP_SHA256  sm17.tar.gz" | sha256sum -c -
           mkdir -p sm17 && tar -xzf sm17.tar.gz -C sm17
           chmod +x sm113/addons/sourcemod/scripting/spcomp sm17/addons/sourcemod/scripting/spcomp
