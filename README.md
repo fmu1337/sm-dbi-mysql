@@ -37,7 +37,8 @@ The sm17 build has been in production on a CS:S v34 server (SourceMod 1.7.3, Ora
 2026-11-09:
 
 - 68 plugins load with no errors, including clientprefs, Shop and SourceBans++.
-- `sm_mysql_hw_test` passes, including a server-side `KILL` of the shared connection while it is in use.
+- `sm_mysql_hw_test` passed 8 of 9 checks, including a server-side `KILL` of the shared connection while it is in use.
+  The one failure was in the test plugin itself (a query in flight during the `KILL`), fixed in v2.0.0.
   With v1.0.0 this case crashed the server (SourceMod #1207).
 
 That server runs a build of the v2.0.0 code from an earlier CI run (sha256 `e971c1fc…`). Builds are not
