@@ -18,7 +18,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Ubuntu 20.04: the glibc that 32-bit CS:S srcds servers run against.
-    container: ubuntu:20.04
+    container:
+      image: ubuntu:20.04
+      # Trial: the 32-bit auth test gets "Can't create TCP/IP socket (38)" (ENOSYS)
+      # under the default seccomp profile. Unconfined is a guess, not yet confirmed.
+      options: --security-opt seccomp=unconfined
+    # MySQL 8.4 for the authentication test (caching_sha2_password, TLS and plaintext).
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-pw
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pci-root-pw"
+          --health-interval 5s --health-timeout 5s --health-retries 30
     strategy:
       fail-fast: false
       matrix:
@@ -31,11 +44,12 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl git make perl \
+            ca-certificates curl git make cmake perl \
             gcc g++ gcc-multilib g++-multilib binutils
           dpkg --add-architecture i386
           apt-get update
-          apt-get install -y --no-install-recommends zlib1g-dev:i386
+          apt-get install -y --no-install-recommends \
+            zlib1g-dev:i386 libc6-i386 libstdc++6:i386 libgcc-s1:i386
 
       - uses: actions/checkout@v4
 
@@ -43,39 +57,70 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache
-          key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt') }}
+          key: build-${{ matrix.label }}-${{ hashFiles('versions.env', 'matrix.txt', 'scripts/build-label.sh') }}
 
       - name: Build ${{ matrix.label }}
         run: bash scripts/build-label.sh ${{ matrix.label }}
+
+      # A static build that cannot log in is useless: check caching_sha2_password
+      # (TLS and plaintext, first login and cached) against the MySQL 8.4 service.
+      - name: Authentication test ${{ matrix.label }}
+        run: |
+          . ./versions.env
+          # Wait for the service name to resolve (it is the service label, "mysql").
+          for i in $(seq 1 30); do
+            if getent hosts mysql >/dev/null; then break; fi
+            sleep 2
+          done
+          # The 32-bit test binary cannot resolve the name itself (MariaDB reports
+          # "Unknown server host" although getent works in the 64-bit shell), so it
+          # gets the address resolved here.
+          ip="$(getent hosts mysql | awk '{print $1; exit}')"
+          if [ -z "$ip" ]; then echo "service host 'mysql' does not resolve"; cat /etc/hosts; exit 1; fi
+          echo "MySQL service at $ip"
+          bash scripts/auth-test.sh \
+            ".cache/mariadb-${MARIADB_COMMIT}-static-auth-i386" \
+            ".cache/openssl-${OPENSSL_VERSION}-i386" \
+            "$ip" 3306 ci-root-pw
 
       - uses: actions/upload-artifact@v4
         with:
           name: dbi-mysql-${{ matrix.label }}
           path: dist/${{ matrix.label }}/
 
-  # scripting/mysql_heatwave_test.sp, compiled with the SourceMod 1.13 compiler.
+  # scripting/mysql_heatwave_test.sp, compiled with the SourceMod 1.13 and 1.7 compilers.
   plugin:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch SourceMod 1.13 spcomp and includes
+      - name: Fetch SourceMod 1.13 and 1.7 compilers
         run: |
           set -euo pipefail
           . ./versions.env
-          curl -fsSL -o sm113.tar.gz "$SPCOMP_DROP_URL"
+          curl -fsSL --retry 5 --retry-delay 15 -o sm113.tar.gz "$SPCOMP_DROP_URL"
           echo "$SPCOMP_DROP_SHA256  sm113.tar.gz" | sha256sum -c -
           mkdir -p sm113 && tar -xzf sm113.tar.gz -C sm113
-          chmod +x sm113/addons/sourcemod/scripting/spcomp
+          curl -fsSL --retry 5 --retry-delay 15 -o sm17.tar.gz "$SPCOMP17_DROP_URL"
+          echo "$SPCOMP17_DROP_SHA256  sm17.tar.gz" | sha256sum -c -
+          mkdir -p sm17 && tar -xzf sm17.tar.gz -C sm17
+          chmod +x sm113/addons/sourcemod/scripting/spcomp sm17/addons/sourcemod/scripting/spcomp
+          sm17/addons/sourcemod/scripting/spcomp -h 2>&1 | head -2 || true
 
       - name: Compile test plugin
         run: |
           set -euo pipefail
           mkdir -p dist/plugin
           sm113/addons/sourcemod/scripting/spcomp \
-            -i sm113/addons/sourcemod/scripting/include \
-            scripting/mysql_heatwave_test.sp -o dist/plugin/mysql_heatwave_test.smx
-          cd dist/plugin && sha256sum mysql_heatwave_test.smx > mysql_heatwave_test.smx.sha256
+            -ism113/addons/sourcemod/scripting/include \
+            scripting/mysql_heatwave_test.sp -odist/plugin/mysql_heatwave_test.smx
+          # spcomp 1.7 has no -D option: the legacy define goes into a copy of the source.
+          mkdir -p build
+          { echo '#define SM_LEGACY_TQUERY'; cat scripting/mysql_heatwave_test.sp; } > build/mysql_heatwave_test_legacy.sp
+          sm17/addons/sourcemod/scripting/spcomp \
+            -ism17/addons/sourcemod/scripting/include \
+            build/mysql_heatwave_test_legacy.sp -odist/plugin/mysql_heatwave_test.sm17.smx
+          cd dist/plugin && sha256sum *.smx > mysql_heatwave_test.smx.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -98,7 +143,7 @@ jobs:
           set -euo pipefail
           mkdir -p release
           find artifacts -name '*.so' -exec cp {} release/ \;
-          cp artifacts/mysql_heatwave_test.smx release/
+          cp artifacts/*.smx release/
           cd release
           sha256sum *.so *.smx > sha256SUMS
           cat sha256SUMS
