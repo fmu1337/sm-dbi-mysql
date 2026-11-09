@@ -19,7 +19,7 @@ archive for those builds. Newer SourceMod versions ship this driver themselves.
 |-----------|-----|------|--------|
 | 1.5.x  | v9  | `dbi.mysql.sm15.ext.so`  | built only |
 | 1.6.x  | v9  | `dbi.mysql.sm16.ext.so`  | built only |
-| 1.7.x  | v9  | `dbi.mysql.sm17.ext.so`  | built only (v1.0.0 of this project ran on CS:S v34; v2 not yet run) |
+| 1.7.x  | v9  | `dbi.mysql.sm17.ext.so`  | run on a real server: CS:S v34, SourceMod 1.7.3, Oracle HeatWave over TLS, `sm_mysql_hw_test` (2026-11-09); `sm_mysql_hw_ssl` not run there |
 | 1.8.x  | v9  | `dbi.mysql.sm18.ext.so`  | built only |
 | 1.9.x  | v9  | `dbi.mysql.sm19.ext.so`  | built only |
 | 1.10.x | v9  | `dbi.mysql.sm110.ext.so` | built only |
@@ -33,8 +33,15 @@ Status meanings:
 - **smoke-tested**: loaded in CI and the test plugin run against MySQL 8.4. Not in v2.0.0 (see Known limits).
 - **built only**: compiled in CI against the pinned SDK, with a published sha256. Not loaded.
 
-No v2.0.0 artifact has been run on a real server yet. The sm17 build is the one to test on
-CS:S v34 (SourceMod 1.7.3) before production use.
+The sm17 build has been in production on a CS:S v34 server (SourceMod 1.7.3, Oracle HeatWave over TLS) since
+2026-11-09:
+
+- 68 plugins load with no errors, including clientprefs, Shop and SourceBans++.
+- `sm_mysql_hw_test` passes, including a server-side `KILL` of the shared connection while it is in use.
+  With v1.0.0 this case crashed the server (SourceMod #1207).
+
+That server runs a build of the v2.0.0 code from an earlier CI run (sha256 `e971c1fc…`). Builds are not
+bit-reproducible. The other labels are built only.
 
 SourceMod 1.5 to 1.12 use DBI interface v9; 1.13 and upstream master use v10. The source is the same for both.
 The one DBI v10 addition, `DatabaseInfo::schemaName`, is not used by this driver. A binary is built for one
@@ -143,8 +150,8 @@ Layout:
 - `ssl_mode` is read from `databases.cfg`. A `SQL_ConnectCustom()` connection cannot use it.
 - Sections that differ only in `ssl_mode` or `ssl_ca` need a different host, user, database or port.
 - The TLS calls follow the css34 SourceMod fork's 1.13 driver. They are not re-verified in this repository.
-- Only the sm17 build of v1.0.0 has run on a game server. Every v2.0.0 label is built only.
-- No CI smoke test with a MySQL server or a game server yet. Planned: a MySQL 8.4 service container, SteamCMD srcds, and SourceMod release drops.
+- Of v2.0.0, only the sm17 build has run on a game server (see Compatibility). Every other label is built only.
+- CI logs in to a MySQL 8.4 service container as a `caching_sha2_password` user, over TLS and without TLS, using the static client library. It does not load the extension in a game server yet. Planned: SteamCMD srcds and SourceMod release drops.
 - Not checked: whether one binary built on the oldest SDK loads on a newer core. Ship the per-label build.
 - Windows is not built.
 
